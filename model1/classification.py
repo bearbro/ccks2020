@@ -1,5 +1,6 @@
 # 文本，事件类别 是/否 二分类
 import gc
+import pickle
 
 import pandas as pd
 import csv, os
@@ -11,7 +12,7 @@ import re
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import f1_score
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, StratifiedKFold
 from keras_bert import load_trained_model_from_checkpoint, Tokenizer
 import keras
 import codecs
@@ -337,9 +338,31 @@ def evaluate(dev_data):
 
 
 # 拆分验证集
-train_data = list(set(data.text))
 flodnums = 5
-kf = KFold(n_splits=flodnums, shuffle=True, random_state=520).split(train_data)
+cv_path = os.path.join(config.ckpt_path, 'cv.pkl')
+if not os.path.exists(cv_path):
+    train_data = list(data.text)
+    y = []
+    for i in data.Q:
+        yi = sum([(2 ** idx) * v for idx, v in enumerate(i)])
+        y.append(yi)
+        # if 1 in i:
+        #     y.append(i.index(1))
+        # else:
+        #     y.append(-1)
+    kf = StratifiedKFold(n_splits=flodnums, shuffle=True, random_state=520).split(train_data, y)
+    # save
+    save_kf = []
+    for i, (train_fold, test_fold) in enumerate(kf):
+        save_kf.append((train_fold, test_fold))
+    f = open(cv_path, 'wb')
+    pickle.dump(save_kf, f, 4)
+    f.close()
+    kf = save_kf
+else:
+    f = open(cv_path, 'rb')
+    kf = pickle.load(f)
+    f.close()
 
 score = []
 for i, (train_fold, test_fold) in enumerate(kf):
