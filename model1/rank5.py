@@ -1,7 +1,6 @@
 #! -*- coding: utf-8 -*-
 
 import json
-
 from tqdm import tqdm
 import os, re
 import numpy as np
@@ -16,15 +15,15 @@ import tensorflow as tf
 gpu_options = tf.GPUOptions(allow_growth=True)
 sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
 
-maxlen = 140  # 140
+maxlen = 256  # 140
 learning_rate = 5e-5  # 5e-5
 min_learning_rate = 1e-5  # 1e-5
-
+bsize = 32
 config_path = '../bert/chinese_L-12_H-768_A-12/bert_config.json'
 checkpoint_path = '../bert/chinese_L-12_H-768_A-12/bert_model.ckpt'
 dict_path = '../bert/chinese_L-12_H-768_A-12/vocab.txt'
 
-model_save_path = "./data/ccks2019"
+model_save_path = "./data/ccks2019_ckt/"
 
 import os
 
@@ -116,7 +115,7 @@ additional_chars.remove(u'，')
 
 
 class data_generator:
-    def __init__(self, data, batch_size=32):
+    def __init__(self, data, batch_size=bsize):
         self.data = data
         self.batch_size = batch_size
         self.steps = len(self.data) // self.batch_size
@@ -162,6 +161,7 @@ from keras.optimizers import Optimizer
 import keras.backend as K
 
 
+# 没用到
 class AccumOptimizer(Optimizer):
     """继承Optimizer类，包装原有优化器，实现梯度累积。
     # 参数
@@ -232,14 +232,12 @@ class AccumOptimizer(Optimizer):
 
 import keras.backend as K
 import tensorflow as tf
-# from keras.layers import *
+from keras.layers import *
 from keras.engine.topology import Layer
 from keras.models import Model
-from keras.callbacks import Callback
+from keras.callbacks import *
 from keras.optimizers import Adam, SGD
 from sklearn.model_selection import KFold
-from keras.layers import Input, Lambda, Add, Dropout, SpatialDropout1D, Bidirectional, Dense
-from keras.layers import GRU  # ,CuDNNGRU
 
 
 def modify_bert_model_3():  # BiGRU + DNN #
@@ -267,9 +265,9 @@ def modify_bert_model_3():  # BiGRU + DNN #
     x = Lambda(lambda x: x[0] * x[1])([x, x_mask])
 
     x = SpatialDropout1D(0.1)(x)
-    x = Bidirectional(GRU(200, return_sequences=True))(x)  # Bidirectional(CuDNNGRU(200, return_sequences=True))(x)
+    x = Bidirectional(CuDNNGRU(200, return_sequences=True))(x)
     x = Lambda(lambda x: x[0] * x[1])([x, x_mask])
-    x = Bidirectional(GRU(200, return_sequences=True))(x)  # Bidirectional(CuDNNGRU(200, return_sequences=True))(x)
+    x = Bidirectional(CuDNNGRU(200, return_sequences=True))(x)
     x = Lambda(lambda x: x[0] * x[1])([x, x_mask])
 
     x = Dense(1024, use_bias=False, activation='tanh')(x)
@@ -288,7 +286,7 @@ def modify_bert_model_3():  # BiGRU + DNN #
     train_model = Model([x1_in, x2_in, s1_in, s2_in], [ps1, ps2])
 
     loss1 = K.mean(K.categorical_crossentropy(s1_in, ps1, from_logits=True))
-    ps2 -= (1 - K.cumsum(s1, 1)) * 1e10
+    ps2 -= (1 - K.cumsum(s1, 1)) * 1e10  # ？
     loss2 = K.mean(K.categorical_crossentropy(s2_in, ps2, from_logits=True))
     loss = loss1 + loss2
 
@@ -362,6 +360,8 @@ def softmax(x):
 
 
 def extract_entity(text_in, c_in):
+    """解码函数，应自行添加更多规则，保证解码出来的是一个公司名
+    """
     if c_in not in classes:
         return 'NaN'
     text_in = u'___%s___%s' % (c_in, text_in)
@@ -392,6 +392,7 @@ class Evaluate(Callback):
         self.dev_data = dev_data
         self.model_path = model_path
 
+    # 调整学习率？tdod
     def on_batch_begin(self, batch, logs=None):
         """第一个epoch用来warmup，第二个epoch把学习率降到最低
         """
@@ -515,7 +516,7 @@ data = pd.DataFrame(columns=["sid", "company"])
 
 dataid = pd.read_csv(model_save_path + "result_k0.txt", sep=',', names=["sid", "company"])[['sid']]
 
-for i in range(flodnums):
+for i in range(1, flodnums):
     datak = pd.read_csv(model_save_path + "result_k" + str(i) + ".txt", sep=',', names=["sid", "company"])
     print(datak.shape)
     data = pd.concat([data, datak], axis=0)
@@ -530,7 +531,7 @@ submit = submit.sort_values(by=["sid", "count"], ascending=False).groupby("sid",
 print(submit.shape)
 
 submit = dataid.merge(submit, how='left', on='sid').fillna("NaN")
-print(data[['sid']].drop_duplicates().shape)
+print(data[['sid']].drop_duplicates().shape)  # ??
 print(submit.shape)
 
 submit[['sid', 'company']].to_csv(model_save_path + "result.txt", header=None, index=False, sep=',')
