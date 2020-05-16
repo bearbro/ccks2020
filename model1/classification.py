@@ -340,8 +340,8 @@ def evaluate(dev_data):
 # 拆分验证集
 flodnums = 5
 cv_path = os.path.join(config.ckpt_path, 'cv.pkl')
+train_data = list(data.text)
 if not os.path.exists(cv_path):
-    train_data = list(data.text)
     y = []
     for i in data.Q:
         yi = sum([(2 ** idx) * v for idx, v in enumerate(i)])

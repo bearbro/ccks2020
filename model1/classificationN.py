@@ -327,7 +327,7 @@ def test(text_in):
 
 def extract_entity(text_in):
     token_ids, segment_ids = tokenizer.encode(first=text_in, max_len=config.max_length)
-    p = train_model.predict([token_ids, segment_ids])
+    p = train_model.predict([token_ids, segment_ids])[0]
 
     return [1 if i > 0.5 else 0 for i in p]
 
@@ -337,17 +337,17 @@ def evaluate(dev_data):
     F = 1e-10
     for d in tqdm(iter(dev_data)):
         R = extract_entity(d[0])
-        if R == d[2]:
+        if R == d[1]:
             A += 1
-        F += f1_score(d[2], R)
+        F += f1_score(d[1], R)
     return A / len(dev_data), F / len(dev_data)
 
 
 # 拆分验证集
 flodnums = 5
 cv_path = os.path.join(config.ckpt_path, 'cv.pkl')
+train_data = list(data.text)
 if not os.path.exists(cv_path):
-    train_data = list(data.text)
     y = []
     for i in data.Q:
         yi = sum([(2 ** idx) * v for idx, v in enumerate(i)])
@@ -373,7 +373,6 @@ else:
 score = []
 for i, (train_fold, test_fold) in enumerate(kf):
     print("kFlod ", i, "/", flodnums)
-    continue
     train_ = data[data.text.isin([train_data[i] for i in train_fold])].values
     dev_ = data[data.text.isin([train_data[i] for i in test_fold])].values
 
@@ -403,9 +402,11 @@ for i, (train_fold, test_fold) in enumerate(kf):
                                   validation_data=dev_D.__iter__(),
                                   validation_steps=len(dev_D)
                                   )
-        score.append(evaluate(dev_))
-        print("valid evluation:", score)
-        print("valid mean score:", np.mean(score, axis=0))
+    else:
+        train_model.load_weights(model_path)
+    score.append(evaluate(dev_))
+    print("valid evluation:", score)
+    print("valid mean score:", np.mean(score, axis=0))
 
     # result_path = config.save_path + "result_k" + str(i) + ".txt"
     # test(test_data, result_path)
