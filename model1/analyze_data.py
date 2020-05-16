@@ -1,11 +1,19 @@
 import pandas as pd
 import csv
 import re
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 data_path = './data/event_entity_train_data_label.csv'
 data_test_path = './data/event_entity_dev_data.csv'
+sep = '\t'
 
-data = pd.read_csv(data_path, encoding='utf-8', sep='\t', index_col=None, header=None,
+# # 2019
+# data_path = './data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_train.csv'
+# data_test_path = './data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_eval.csv'
+# sep = ','
+
+data = pd.read_csv(data_path, encoding='utf-8', sep=sep, index_col=None, header=None,
                    names=['id', 'text', 'Q', 'A'], quoting=csv.QUOTE_NONE)
 
 # 确认数据个数
@@ -35,9 +43,25 @@ with open('./data/event_entity_train_data_label.csv', 'r', encoding='utf-8') as 
 print('原始数据有%d行' % len(data))
 # 存在仅id不同的行,
 # 去除仅id不同的重复行,剩余67002行
-data.drop_duplicates(subset=['text', 'Q', 'A'], keep='first', inplace=True, ignore_index=True)
+data.drop_duplicates(subset=['text', 'Q', 'A'], keep='first', inplace=True)
+data.index = range(len(data))
 print('去除text,Q,A重复的行后，还有%d行' % len(data))
 # text有重复 60242种
+# 看一下text的长度
+TL = [len(i) for i in data.text]
+sns.distplot(TL)
+plt.show()
+print('text-min:%d' % min(TL))
+print('text-max:%d' % max(TL))
+print('text-[,10):%d\t%.3f%%' % (len([i for i in TL if i < 10]), len([i for i in TL if i < 10]) / len(TL) * 100))
+print('text-(256,):%d\t%.3f%%' % (len([i for i in TL if i > 256]), len([i for i in TL if i > 256]) / len(TL) * 100))
+print('text-(512,):%d\t%.3f%%' % (len([i for i in TL if i > 512]), len([i for i in TL if i > 512]) / len(TL) * 100))
+# 最小3 最大 2646
+# 小于10 104
+# 大于512 449
+# 大于256 1917
+
+
 # text+Q 重复的 2584种，6560行
 text_set = dict()
 for i in range(len(data)):
@@ -137,8 +161,24 @@ print('A中缩略语个数：%d' % a_sly)
 print('A中仅缩略语重复的TQ个数：%d' % a_sly_1)
 
 # 测试集合
-data_test = pd.read_csv(data_test_path, encoding='utf-8', sep='\t', index_col=None, header=None,
+data_test = pd.read_csv(data_test_path, encoding='utf-8', sep=sep, index_col=None, header=None,
                         names=['id', 'text'], quoting=csv.QUOTE_NONE)
 print('测试集合大小:%d' % len(data_test))  # 900
 print('测试集合id种类:%d' % len(set(data_test.id)))  # 900
 print('测试集合text种类:%d' % len(data_test.text))  # 900
+
+TL_test = [len(i) for i in data_test.text]
+sns.distplot(TL_test)
+plt.show()
+print('text-min:%d' % min(TL_test))
+print('text-max:%d' % max(TL_test))
+print('text-[,10):%d\t%.3f%%' % (
+    len([i for i in TL_test if i < 10]), len([i for i in TL_test if i < 10]) / len(TL_test) * 100))
+print('text-(256,):%d\t%.3f%%' % (
+    len([i for i in TL_test if i > 256]), len([i for i in TL_test if i > 256]) / len(TL_test) * 100))
+print('text-(512,):%d\t%.3f%%' % (
+    len([i for i in TL_test if i > 512]), len([i for i in TL_test if i > 512]) / len(TL_test) * 100))
+# 最小16,最大343
+# 小于10 0
+# 大于512 0
+# 大于256 18
