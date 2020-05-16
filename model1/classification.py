@@ -324,7 +324,7 @@ def test(text_in):
 
 def extract_entity(text_in, c_in):
     token_ids, segment_ids = tokenizer.encode(first=text_in, second=c_in, max_len=config.max_length)
-    p = train_model.predict([token_ids, segment_ids])
+    p = train_model.predict([[token_ids], [segment_ids]])[0]
     return p > 0.5
 
 

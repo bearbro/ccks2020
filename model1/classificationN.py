@@ -188,8 +188,8 @@ def basic_network():
                                                     training=False,
                                                     trainable=True)
 
-    x_1 = keras.layers.Input(shape=(None,), name='input_x1')
-    x_2 = keras.layers.Input(shape=(None,), name='input_x2')
+    x_1 = keras.layers.Input(shape=(config.max_length,), name='input_x1')
+    x_2 = keras.layers.Input(shape=(config.max_length,), name='input_x2')
 
     bert_out = bert_model([x_1, x_2])  # 输出维度为(batch_size,max_length,768)
 
@@ -327,21 +327,22 @@ def test(text_in):
 
 def extract_entity(text_in):
     token_ids, segment_ids = tokenizer.encode(first=text_in, max_len=config.max_length)
-    p = train_model.predict([token_ids, segment_ids])[0]
-
+    p = train_model.predict([[token_ids], [segment_ids]])[0]
     return [1 if i > 0.5 else 0 for i in p]
 
 
 def evaluate(dev_data):
     A = 1e-10
     F = 1e-10
+    true_m = []
+    pred_m = []
     for d in tqdm(iter(dev_data)):
         R = extract_entity(d[0])
         if R == d[1]:
             A += 1
-        F += f1_score(d[1], R)
-    return A / len(dev_data), F / len(dev_data)
-
+        true_m.append(d[1])
+        pred_m.append(R)
+    return A / len(dev_data), f1_score(true_m, pred_m, average='micro')
 
 # 拆分验证集
 flodnums = 5
