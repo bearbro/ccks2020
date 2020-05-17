@@ -107,6 +107,10 @@ data【text，label】
 
 '''
 
+# 测试集
+test_data = pd.read_csv(data_test_path, encoding='utf-8', sep=sep, index_col=None, header=None,
+                        names=['id', 'text'], quoting=csv.QUOTE_NONE)
+test_data = test_data.values
 # 作用
 '''
 本来 Tokenizer 有自己的 _tokenize 方法，我这里重写了这个方法，是要保证 tokenize 之后的结果，跟原来的字符串长度等长（如果算上两个标记，那么就是等长再加 2）。 Tokenizer 自带的 _tokenize 会自动去掉空格，然后有些字符会粘在一块输出，导致 tokenize 之后的列表不等于原来字符串的长度了，这样如果做序列标注的任务会很麻烦。
@@ -313,36 +317,65 @@ class data_generator:
                     X1, X2, P = [], [], []
 
 
-def test(text_in):
-    a = []
-    for c_in in id2label:
-        # 构造位置id和字id
-        token_ids, segment_ids = tokenizer.encode(first=text_in, second=c_in, max_len=config.max_length)
-        p = train_model.predict([token_ids, segment_ids])
+def have(text, c):
+    dict_c = {
+        '债务违约': ['债务违约', '货款违约'],
+        '履行连带担保责任': ['履行连带担保责任', '承担连带担保责任']
+    }
+    if c in dict_c:
+        c = dict_c[c]
+    else:
+        c = [c]
+    for i in c:
+        if i in text:
+            return True
+    return False
 
-        if p > 0.5:
-            a.append(c_in)
-    return a
+
+def test(text_in, result_path):
+    with open(result_path, 'w') as fout:
+        for d in tqdm(iter(text_in)):
+            id = d[0]
+            text_in = d[1]
+            # 构造位置id和字id
+            token_ids, segment_ids = tokenizer.encode(first=text_in, max_len=config.max_length)
+            p = train_model.predict([[token_ids], [segment_ids]])[0]
+            tags = [id2label[i] for i, v in enumerate(p) if v > 0.5]
+            # 显式出现的词
+            for idx, tag in enumerate(id2label):
+                if tag not in tags and have(text_in, tag):  # 硬规则 可优化
+                    tags.append(tag)
+            if len(tags) == 0:
+                fout.write('%d\t%s\t%s\n' % (id, text_in, 'NaN'))
+            else:
+                for tag in tags:
+                    fout.write('%d\t%s\t%s\n' % (id, text_in, tag))
 
 
-def extract_entity(text_in):
+def extract_entity(text_in, add=False):
     token_ids, segment_ids = tokenizer.encode(first=text_in, max_len=config.max_length)
     p = train_model.predict([[token_ids], [segment_ids]])[0]
+    if add:
+        # 显式出现的词
+        for idx, tag in enumerate(id2label):
+            if have(text_in, tag):  # 硬规则 可优化
+                p[idx] = 1
     return [1 if i > 0.5 else 0 for i in p]
 
 
-def evaluate(dev_data):
+def evaluate(dev_data, add=False):
     A = 1e-10
     F = 1e-10
     true_m = []
     pred_m = []
     for d in tqdm(iter(dev_data)):
-        R = extract_entity(d[0])
+        R = extract_entity(d[0], add=add)
         if R == d[1]:
             A += 1
         true_m.append(d[1])
         pred_m.append(R)
     return A / len(dev_data), f1_score(true_m, pred_m, average='micro')
+
 
 # 拆分验证集
 flodnums = 5
@@ -372,6 +405,7 @@ else:
     f.close()
 
 score = []
+score_add = []
 for i, (train_fold, test_fold) in enumerate(kf):
     print("kFlod ", i, "/", flodnums)
     train_ = data[data.text.isin([train_data[i] for i in train_fold])].values
@@ -381,7 +415,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
     dev_D = data_generator(dev_)
 
     train_model = basic_network()
-    model_path = os.path.join(config.ckpt_path, "modify_bert_model" + str(i) + ".weights")
+    model_path = os.path.join(config.ckpt_path, "modify_bert_model-" + str(i) + ".weights")
     if not os.path.exists(model_path):
         checkpoint = keras.callbacks.ModelCheckpoint(model_path,
                                                      monitor='val_f1_metric',
@@ -405,13 +439,23 @@ for i, (train_fold, test_fold) in enumerate(kf):
                                   )
     else:
         train_model.load_weights(model_path)
+    print('val')
     score.append(evaluate(dev_))
-    print("valid evluation:", score)
+    print("val evluation", score[-1])
+    print("valid score:", score)
     print("valid mean score:", np.mean(score, axis=0))
-
-    # result_path = config.save_path + "result_k" + str(i) + ".txt"
-    # test(test_data, result_path)
+    score_add.append(evaluate(dev_, add=True))
+    print("val evluation_add", score_add[-1])
+    print("val score_add:", score_add)
+    print("val mean score_add:", np.mean(score_add, axis=0))
+    result_path = os.path.join(config.save_path, "result_k" + str(i) + ".csv")
+    if not os.path.exists(result_path):
+        print('test')
+        test(test_data, result_path)
 
     del train_model
     gc.collect()
     K.clear_session()
+    break
+
+# todo 集成答案
