@@ -148,13 +148,13 @@ class data_generator:
                     X2.append(x2)
                     S1.append(s1)
                     S2.append(s2)
-                    if len(X1) == self.batch_size or i == idxs[-1]:
-                        X1 = seq_padding(X1)
-                        X2 = seq_padding(X2)
-                        S1 = seq_padding(S1)
-                        S2 = seq_padding(S2)
-                        yield [X1, X2, S1, S2], None
-                        X1, X2, S1, S2 = [], [], [], []
+                if len(X1) == self.batch_size or i == idxs[-1]:
+                    X1 = seq_padding(X1)
+                    X2 = seq_padding(X2)
+                    S1 = seq_padding(S1)
+                    S2 = seq_padding(S2)
+                    yield [X1, X2, S1, S2], None
+                    X1, X2, S1, S2 = [], [], [], []
 
 
 from keras.optimizers import Optimizer
