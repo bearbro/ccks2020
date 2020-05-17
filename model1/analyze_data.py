@@ -16,6 +16,26 @@ sep = '\t'
 data = pd.read_csv(data_path, encoding='utf-8', sep=sep, index_col=None, header=None,
                    names=['id', 'text', 'Q', 'A'], quoting=csv.QUOTE_NONE)
 
+
+def delete_tag(s):
+    s = re.sub('\{IMG:.?.?.?\}', '', s)  # 图片
+    s = re.sub(re.compile(r'[a-zA-Z]+://[^\s]+'), '', s)  # 网址
+    s = re.sub(re.compile('<.*?>'), '', s)  # 网页标签
+    s = re.sub(re.compile('&[a-zA-Z]+;?'), ' ', s)  # 网页标签
+    s = re.sub(re.compile('[a-zA-Z0-9]*[./]+[a-zA-Z0-9./]+[a-zA-Z0-9./]*'), ' ', s)
+    s = re.sub("\?{2,}", "", s)
+    s = re.sub("（", ",", s)
+    s = re.sub("）", ",", s)
+    s = re.sub("\(", ",", s)
+    s = re.sub("\)", ",", s)
+    s = re.sub("\u3000", "", s)
+    s = re.sub(" ", "", s)
+    r4 = re.compile('\d{4}[-/年](\d{2}([-/月]\d{2}[日]{0,1}){0,1}){0,1}')  # 日期
+    s = re.sub(r4, '某时', s)
+    return s
+
+
+data['text'] = [delete_tag(s) for s in data.text]
 # 确认数据个数
 # 每行都是3个\t,即4段
 with open('./data/event_entity_train_data_label.csv', 'r', encoding='utf-8') as fr:
@@ -54,6 +74,7 @@ plt.show()
 print('text-min:%d' % min(TL))
 print('text-max:%d' % max(TL))
 print('text-[,10):%d\t%.3f%%' % (len([i for i in TL if i < 10]), len([i for i in TL if i < 10]) / len(TL) * 100))
+print('text-(128,):%d\t%.3f%%' % (len([i for i in TL if i > 128]), len([i for i in TL if i > 128]) / len(TL) * 100))
 print('text-(256,):%d\t%.3f%%' % (len([i for i in TL if i > 256]), len([i for i in TL if i > 256]) / len(TL) * 100))
 print('text-(512,):%d\t%.3f%%' % (len([i for i in TL if i > 512]), len([i for i in TL if i > 512]) / len(TL) * 100))
 # 最小3 最大 2646
@@ -163,6 +184,7 @@ print('A中仅缩略语重复的TQ个数：%d' % a_sly_1)
 # 测试集合
 data_test = pd.read_csv(data_test_path, encoding='utf-8', sep=sep, index_col=None, header=None,
                         names=['id', 'text'], quoting=csv.QUOTE_NONE)
+data_test['text'] = [delete_tag(s) for s in data_test.text]
 print('测试集合大小:%d' % len(data_test))  # 900
 print('测试集合id种类:%d' % len(set(data_test.id)))  # 900
 print('测试集合text种类:%d' % len(data_test.text))  # 900
@@ -174,6 +196,8 @@ print('text-min:%d' % min(TL_test))
 print('text-max:%d' % max(TL_test))
 print('text-[,10):%d\t%.3f%%' % (
     len([i for i in TL_test if i < 10]), len([i for i in TL_test if i < 10]) / len(TL_test) * 100))
+print('text-(128,):%d\t%.3f%%' % (
+    len([i for i in TL_test if i > 128]), len([i for i in TL_test if i > 128]) / len(TL_test) * 100))
 print('text-(256,):%d\t%.3f%%' % (
     len([i for i in TL_test if i > 256]), len([i for i in TL_test if i > 256]) / len(TL_test) * 100))
 print('text-(512,):%d\t%.3f%%' % (
