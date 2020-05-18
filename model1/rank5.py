@@ -1,5 +1,5 @@
 #! -*- coding: utf-8 -*-
-
+# https://github.com/hecongqing/CCKS2019_EventEntityExtraction_Rank5
 import json
 from tqdm import tqdm
 import os, re
