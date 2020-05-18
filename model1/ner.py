@@ -6,28 +6,35 @@ import gc
 import os
 import pickle
 import re
-
+import numpy as np
 import pandas as pd
 import tensorflow as tf
+from keras.callbacks import *
+from keras.layers import *
+from keras.models import Model
+from keras.optimizers import Adam, SGD
 from keras_bert import load_trained_model_from_checkpoint, Tokenizer
+from sklearn.model_selection import KFold, StratifiedKFold
 from tqdm import tqdm
 
 gpu_options = tf.GPUOptions(allow_growth=True)
 sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
 
-maxlen = 128  # 140
+maxlen = 256  # 140
 learning_rate = 5e-5  # 5e-5
 min_learning_rate = 1e-5  # 1e-5
-bsize = 32
-config_path = '../bert/chinese_L-12_H-768_A-12/bert_config.json'
-checkpoint_path = '../bert/chinese_L-12_H-768_A-12/bert_model.ckpt'
-dict_path = '../bert/chinese_L-12_H-768_A-12/vocab.txt'
+bsize = 16
+bert_kind = ['chinese_L-12_H-768_A-12', 'tf-bert_wwm_ext'][1]
+config_path = os.path.join('../bert', bert_kind, 'bert_config.json')
+checkpoint_path = os.path.join('../bert', bert_kind, 'bert_model.ckpt')
+dict_path = os.path.join('../bert', bert_kind, 'vocab.txt')
 
 # model_save_path = "./data/ccks2019_ckt/"
 # train_data_path='./data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_train.csv'
 # test_data_path='./data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_eval.csv'
 # sep = ','
-model_save_path = "./data/ccks2020_ckt/"
+
+model_save_path = "./data/ccks2020_ckt_deleteTag/"
 train_data_path = './data/event_entity_train_data_label.csv'
 test_data_path = './data/classificationN_save/result_k0.csv'
 sep = '\t'
@@ -61,7 +68,7 @@ tokenizer = OurTokenizer(token_dict)
 
 def seq_padding(X, padding=0):
     L = [len(x) for x in X]
-    ML = max(L)
+    ML = maxlen
     return np.array([
         np.concatenate([x, [padding] * (ML - len(x))]) if len(x) < ML else x for x in X
     ])
@@ -82,48 +89,50 @@ def delete_tag(s):
     s = re.sub('\{IMG:.?.?.?\}', '', s)  # 图片
     s = re.sub(re.compile(r'[a-zA-Z]+://[^\s]+'), '', s)  # 网址
     s = re.sub(re.compile('<.*?>'), '', s)  # 网页标签
-    s = re.sub(re.compile('&[a-zA-Z]+;?'), ' ', s)  # 网页标签
-    s = re.sub(re.compile('[a-zA-Z0-9]*[./]+[a-zA-Z0-9./]+[a-zA-Z0-9./]*'), ' ', s)
+    s = re.sub(re.compile('&[a-zA-Z]+;?'), '', s)  # 网页标签
+    s = re.sub(re.compile('[a-zA-Z0-9]*[./]+[a-zA-Z0-9./]+[a-zA-Z0-9./]*'), '', s)
     s = re.sub("\?{2,}", "", s)
-    s = re.sub("（", ",", s)
-    s = re.sub("）", ",", s)
-    s = re.sub("\(", ",", s)
-    s = re.sub("\)", ",", s)
+    # s = re.sub("（", ",", s)
+    # s = re.sub("）", ",", s)
+    s = re.sub(" \(", "（", s)
+    s = re.sub("\) ", "）", s)
     s = re.sub("\u3000", "", s)
-    s = re.sub(" ", "", s)
+    # s = re.sub(" ", "", s)
     r4 = re.compile('\d{4}[-/年](\d{2}([-/月]\d{2}[日]{0,1}){0,1}){0,1}')  # 日期
-    s = re.sub(r4, '某时', s)
+    s = re.sub(r4, "▲", s)
     return s
 
 
 # 读取训练集
-D = pd.read_csv(train_data_path, encoding='utf-8', sep=sep,
-                names=['id', 'text', 'Q', 'A'], quoting=csv.QUOTE_NONE)
+data = pd.read_csv(train_data_path, encoding='utf-8', sep=sep,
+                   names=['id', 'text', 'Q', 'A'], quoting=csv.QUOTE_NONE)
 
-D['text'] = [delete_tag(s) for s in D.text]
+data['text'] = [delete_tag(s) for s in data.text]
 # NaN替换成'NaN'
-D.fillna('NaN', inplace=True)
+data.fillna('NaN', inplace=True)
 
-D = D[D["Q"] != 'NaN']  # 优化 通过分类模型补上c
+data = data[data["Q"] != 'NaN']  # 优化 通过分类模型补上c
 # 45796
-classes = set(D["Q"].unique())
+classes = set(data["Q"].unique())
 
-entity_train = list(set(D['A'].values.tolist()))
+entity_train = list(set(data['A'].values.tolist()))
 
 # ClearData
-D.drop("id", axis=1, inplace=True)  # drop id
-D.drop_duplicates(['text', 'Q', 'A'], keep='first', inplace=True)  # drop duplicates
-D["A"] = D["A"].map(lambda x: str(x).replace('NaN', ''))
-D["e"] = D.apply(lambda row: 1 if row[2] in row[0] else 0, axis=1)
+data.drop("id", axis=1, inplace=True)  # drop id
+data.drop_duplicates(['text', 'Q', 'A'], keep='first', inplace=True)  # drop duplicates
+data["A"] = data["A"].map(lambda x: str(x).replace('NaN', ''))
+data["e"] = data.apply(lambda row: 1 if row[2] in row[0] else 0, axis=1)
 
-D = D[D["e"] == 1]
+data = data[data["e"] == 1]
 # 38993
 # D.drop_duplicates(["b", "c"], keep='first', inplace=True)  # drop duplicates
 # 35288
 
 train_data = []
-for t, c, n in zip(D["text"], D["Q"], D["A"]):
+for t, c, n in zip(data["text"], data["Q"], data["A"]):
     train_data.append((t, c, n))
+print('最终训练集大小:%d' % len(train_data))
+print('-' * 30)
 
 D = pd.read_csv(test_data_path, header=None, sep=sep,
                 names=["id", "text", "event"], quoting=csv.QUOTE_NONE)
@@ -138,6 +147,8 @@ D['text'] = D['text'].map(lambda x: re.sub(comp, "▲", x))
 test_data = []
 for id, t, c in zip(D["id"], D["text"], D["event"]):
     test_data.append((id, t, c))
+print('最终测试集大小:%d' % len(test_data))
+print('-' * 30)
 
 additional_chars = set()
 for d in train_data:
@@ -191,12 +202,6 @@ class data_generator:
 
 # 定义模型
 
-from keras.layers import *
-from keras.models import Model
-from keras.callbacks import *
-from keras.optimizers import Adam, SGD
-from sklearn.model_selection import KFold
-
 
 def modify_bert_model_3():  # BiGRU + DNN #
 
@@ -211,7 +216,8 @@ def modify_bert_model_3():  # BiGRU + DNN #
     s2_in = Input(shape=(None,))  # 实体右边界（标签）
 
     x1, x2, s1, s2 = x1_in, x2_in, s1_in, s2_in
-    x_mask = Lambda(lambda x: K.cast(K.greater(K.expand_dims(x, 2), 0), 'float32'))(x1)
+    # 标记text
+    x_mask = Lambda(lambda x: K.cast(K.greater(K.expand_dims(x, 2), 0), 'float32'))(x1)  # x_mask：1111111100
     x = bert_model([x1, x2])
 
     l = Lambda(lambda t: t[:, -1])(x)
@@ -317,7 +323,7 @@ def extract_entity(text_in, c_in):
     if c_in not in classes:
         return 'NaN'
     text_in = u'___%s___%s' % (c_in, text_in)
-    text_in = text_in[:510]
+    text_in = text_in[:maxlen - 2]
     _tokens = tokenizer.tokenize(text_in)
     _x1, _x2 = tokenizer.encode(first=text_in)
     _x1, _x2 = np.array([_x1]), np.array([_x2])
@@ -408,7 +414,8 @@ flodnums = 10
 # 拆分验证集
 cv_path = os.path.join(model_save_path, 'cv2.pkl')
 if not os.path.exists(cv_path):
-    kf = kf = KFold(n_splits=flodnums, shuffle=True, random_state=520).split(train_data)
+    y = [i[-2] for i in train_data]  # Q
+    kf = StratifiedKFold(n_splits=flodnums, shuffle=True, random_state=520).split(train_data, y)
     # save
     save_kf = []
     for i, (train_fold, test_fold) in enumerate(kf):
@@ -439,7 +446,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
         evaluator = Evaluate(dev_, model_path)
         train_model.fit_generator(train_D.__iter__(),
                                   steps_per_epoch=len(train_D),
-                                  epochs=5,
+                                  epochs=10,
                                   callbacks=[evaluator],
                                   validation_data=dev_D.__iter__(),
                                   validation_steps=len(dev_D)
@@ -462,7 +469,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
         evaluator = Evaluate(dev_, model_h_path)
         train_model.fit_generator(train_D.__iter__(),
                                   steps_per_epoch=len(train_D),
-                                  epochs=10,
+                                  epochs=15,
                                   callbacks=[evaluator],
                                   validation_data=dev_D.__iter__(),
                                   validation_steps=len(dev_D)
@@ -486,6 +493,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
     del model
     gc.collect()
     K.clear_session()
+    a = 0 / 0
 
 ####### Submit #######
 data = pd.DataFrame(columns=["sid", "tag", "company"])
