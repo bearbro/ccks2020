@@ -332,7 +332,7 @@ def have(text, c):
     return False
 
 
-def test(text_in, result_path):
+def test(text_in, result_path, add=False):
     with open(result_path, 'w') as fout:
         for d in tqdm(iter(text_in)):
             id = d[0]
@@ -341,10 +341,11 @@ def test(text_in, result_path):
             token_ids, segment_ids = tokenizer.encode(first=text_in, max_len=config.max_length)
             p = train_model.predict([[token_ids], [segment_ids]])[0]
             tags = [id2label[i] for i, v in enumerate(p) if v > 0.5]
-            # 显式出现的词
-            for idx, tag in enumerate(id2label):
-                if tag not in tags and have(text_in, tag):  # 硬规则 可优化
-                    tags.append(tag)
+            if add:
+                # 显式出现的词
+                for idx, tag in enumerate(id2label):
+                    if tag not in tags and have(text_in, tag):  # 硬规则 可优化
+                        tags.append(tag)
             if len(tags) == 0:
                 fout.write('%d\t%s\t%s\n' % (id, text_in, 'NaN'))
             else:
@@ -451,7 +452,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
     result_path = os.path.join(config.save_path, "result_k" + str(i) + ".csv")
     if not os.path.exists(result_path):
         print('test')
-        test(test_data, result_path)
+        test(test_data, result_path, add=False)
 
     del train_model
     gc.collect()
