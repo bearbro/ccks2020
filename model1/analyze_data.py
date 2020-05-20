@@ -21,17 +21,17 @@ def delete_tag(s):
     s = re.sub('\{IMG:.?.?.?\}', '', s)  # 图片
     s = re.sub(re.compile(r'[a-zA-Z]+://[^\s]+'), '', s)  # 网址
     s = re.sub(re.compile('<.*?>'), '', s)  # 网页标签
-    s = re.sub(re.compile('&[a-zA-Z]+;?'), ' ', s)  # 网页标签
-    s = re.sub(re.compile('[a-zA-Z0-9]*[./]+[a-zA-Z0-9./]+[a-zA-Z0-9./]*'), ' ', s)
+    s = re.sub(re.compile('&[a-zA-Z]+;?'), '', s)  # 网页标签
+    s = re.sub(re.compile('[a-zA-Z0-9]*[./]+[a-zA-Z0-9./]+[a-zA-Z0-9./]*'), '', s)
     s = re.sub("\?{2,}", "", s)
-    s = re.sub("（", ",", s)
-    s = re.sub("）", ",", s)
-    s = re.sub("\(", ",", s)
-    s = re.sub("\)", ",", s)
+    # s = re.sub("（", ",", s)
+    # s = re.sub("）", ",", s)
+    s = re.sub(" \(", "（", s)
+    s = re.sub("\) ", "）", s)
     s = re.sub("\u3000", "", s)
-    s = re.sub(" ", "", s)
+    # s = re.sub(" ", "", s)
     r4 = re.compile('\d{4}[-/年](\d{2}([-/月]\d{2}[日]{0,1}){0,1}){0,1}')  # 日期
-    s = re.sub(r4, '某时', s)
+    s = re.sub(r4, "▲", s)
     return s
 
 

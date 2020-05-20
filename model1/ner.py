@@ -29,12 +29,67 @@ config_path = os.path.join('../bert', bert_kind, 'bert_config.json')
 checkpoint_path = os.path.join('../bert', bert_kind, 'bert_model.ckpt')
 dict_path = os.path.join('../bert', bert_kind, 'vocab.txt')
 
-# model_save_path = "./data/ccks2019_ckt/"
-# train_data_path='./data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_train.csv'
-# test_data_path='./data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_eval.csv'
-# sep = ','
 
-model_save_path = "./data/ccks2020_ckt_deleteTag/"
+def delete_tag(s):
+    s = re.sub('\{IMG:.?.?.?\}', '', s)  # 图片
+    s = re.sub(re.compile(r'[a-zA-Z]+://[^\s]+'), '', s)  # 网址
+    s = re.sub(re.compile('<.*?>'), '', s)  # 网页标签
+    s = re.sub(re.compile('&[a-zA-Z]+;?'), '', s)  # 网页标签
+    s = re.sub(re.compile('[a-zA-Z0-9]*[./]+[a-zA-Z0-9./]+[a-zA-Z0-9./]*'), '', s)
+    s = re.sub("\?{2,}", "", s)
+    # s = re.sub("（", ",", s)
+    # s = re.sub("）", ",", s)
+    s = re.sub(" \(", "（", s)
+    s = re.sub("\) ", "）", s)
+    s = re.sub("\u3000", "", s)
+    # s = re.sub(" ", "", s)
+    r4 = re.compile('\d{4}[-/年](\d{2}([-/月]\d{2}[日]{0,1}){0,1}){0,1}')  # 日期
+    s = re.sub(r4, "▲", s)
+    return s
+
+
+model_save_path = "./data/ccks2019_ckt/"
+train_data_path = './data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_train.csv'
+test_data_path = './data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_eval.csv'
+sep = ','
+
+# 辅助训练集
+data_help = pd.read_csv(train_data_path, encoding='utf-8', sep=sep,
+                        names=['id', 'text', 'Q', 'A'], quoting=csv.QUOTE_NONE)
+# 去引号
+data_help["text"] = data_help["text"].apply(lambda x: x[1:-1] if len(x) >= 2 else '')
+data_help["Q"] = data_help["Q"].apply(lambda x: x[1:-1] if len(x) >= 2 else '')
+data_help["A"] = data_help["A"].apply(lambda x: x[1:-1] if len(x) >= 2 else '')
+
+data_help['text'] = [delete_tag(s) for s in data_help.text]
+# NaN替换成'NaN'
+data_help.fillna('NaN', inplace=True)
+
+data_help = data_help[data_help["Q"] != '其他']  # 优化 通过分类模型补上c
+# 45796
+classes_help = set(data_help["Q"].unique())
+
+entity_train_help = list(set(data_help['A'].values.tolist()))
+
+# ClearData
+data_help.drop("id", axis=1, inplace=True)  # drop id
+data_help.drop_duplicates(['text', 'Q', 'A'], keep='first', inplace=True)  # drop duplicates
+data_help["A"] = data_help["A"].map(lambda x: str(x).replace('其他', ''))
+
+data_help["e"] = data_help.apply(lambda row: 1 if row[2] in row[0] else 0, axis=1)
+data_help = data_help[data_help["e"] == 1]
+data_help = data_help[data_help.A != '']
+# 14353
+# D.drop_duplicates(["b", "c"], keep='first', inplace=True)  # drop duplicates
+#
+
+train_data_help = []
+for t, c, n in zip(data_help["text"], data_help["Q"], data_help["A"]):
+    train_data_help.append((t, c, n))
+print('辅助训练集大小:%d' % len(train_data_help))
+print('-' * 30)
+
+model_save_path = "./data/ccks2020_ckt_deleteTag_help/"
 train_data_path = './data/event_entity_train_data_label.csv'
 test_data_path = './data/classificationN_save/result_k0.csv'
 sep = '\t'
@@ -58,6 +113,10 @@ class OurTokenizer(Tokenizer):
                 R.append(c)
             elif self._is_space(c):
                 R.append('[unused1]')  # space类用未经训练的[unused1]表示
+            elif c == 'S':
+                R.append('[unused2]')
+            elif c == 'T':
+                R.append('[unused3]')
             else:
                 R.append('[UNK]')  # 剩余的字符是[UNK]
         return R
@@ -85,24 +144,6 @@ def list_find(list1, list2):
     return -1
 
 
-def delete_tag(s):
-    s = re.sub('\{IMG:.?.?.?\}', '', s)  # 图片
-    s = re.sub(re.compile(r'[a-zA-Z]+://[^\s]+'), '', s)  # 网址
-    s = re.sub(re.compile('<.*?>'), '', s)  # 网页标签
-    s = re.sub(re.compile('&[a-zA-Z]+;?'), '', s)  # 网页标签
-    s = re.sub(re.compile('[a-zA-Z0-9]*[./]+[a-zA-Z0-9./]+[a-zA-Z0-9./]*'), '', s)
-    s = re.sub("\?{2,}", "", s)
-    # s = re.sub("（", ",", s)
-    # s = re.sub("）", ",", s)
-    s = re.sub(" \(", "（", s)
-    s = re.sub("\) ", "）", s)
-    s = re.sub("\u3000", "", s)
-    # s = re.sub(" ", "", s)
-    r4 = re.compile('\d{4}[-/年](\d{2}([-/月]\d{2}[日]{0,1}){0,1}){0,1}')  # 日期
-    s = re.sub(r4, "▲", s)
-    return s
-
-
 # 读取训练集
 data = pd.read_csv(train_data_path, encoding='utf-8', sep=sep,
                    names=['id', 'text', 'Q', 'A'], quoting=csv.QUOTE_NONE)
@@ -120,10 +161,11 @@ entity_train = list(set(data['A'].values.tolist()))
 # ClearData
 data.drop("id", axis=1, inplace=True)  # drop id
 data.drop_duplicates(['text', 'Q', 'A'], keep='first', inplace=True)  # drop duplicates
-data["A"] = data["A"].map(lambda x: str(x).replace('NaN', ''))
+data["A"] = data["A"].map(lambda x: str(x).replace('NaN', ''))  # 可优化
 data["e"] = data.apply(lambda row: 1 if row[2] in row[0] else 0, axis=1)
 
 data = data[data["e"] == 1]
+data = data[data.A != '']
 # 38993
 # D.drop_duplicates(["b", "c"], keep='first', inplace=True)  # drop duplicates
 # 35288
@@ -435,6 +477,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
     print("kFlod ", i, "/", flodnums)
     train_ = [train_data[i] for i in train_fold]
     dev_ = [train_data[i] for i in test_fold]
+    train_ += train_data_help
 
     model, train_model = modify_bert_model_3()
 
@@ -474,10 +517,10 @@ for i, (train_fold, test_fold) in enumerate(kf):
                                   validation_data=dev_D.__iter__(),
                                   validation_steps=len(dev_D)
                                   )
-    else:
-        print("load best model weights ...")
-        train_model.load_weights(model_h_path)
-        model.load_weights(model_h_path)
+
+    print("load best model weights ...")
+    train_model.load_weights(model_h_path)
+    model.load_weights(model_h_path)
 
     print('val')
     score.append(evaluate(dev_))

@@ -1,4 +1,5 @@
 # 文本  多标签分类
+# todo 优化 把长句子切成两部分
 import gc
 import pickle
 
@@ -44,11 +45,11 @@ class Config:
     bert_config_path = os.path.join(bert_path, 'bert_config.json')
     bert_ckpt_path = os.path.join(bert_path, 'bert_model.ckpt')
     bert_dict_path = os.path.join(bert_path, 'vocab.txt')
-    ckpt_path = './data/classificationN_ckpt'
-    save_path = './data/classificationN_save'
-    max_length = 128
-    batch_size = 32
-    learning_rate = 1e-5
+    ckpt_path = './data/classificationN_ckpt_256'
+    save_path = './data/classificationN_save_256'
+    max_length = 256
+    batch_size = 16
+    learning_rate = 3e-5
 
 
 config = Config()
@@ -56,10 +57,28 @@ for pathi in [config.ckpt_path, config.save_path]:
     if not os.path.exists(pathi):
         os.mkdir(pathi)
 
+
 # # 2019
 # data_path = './data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_train.csv'
 # data_test_path = './data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_eval.csv'
 # sep = ','
+def delete_tag(s):
+    s = re.sub('\{IMG:.?.?.?\}', '', s)  # 图片
+    s = re.sub(re.compile(r'[a-zA-Z]+://[^\s]+'), '', s)  # 网址
+    s = re.sub(re.compile('<.*?>'), '', s)  # 网页标签
+    s = re.sub(re.compile('&[a-zA-Z]+;?'), '', s)  # 网页标签
+    s = re.sub(re.compile('[a-zA-Z0-9]*[./]+[a-zA-Z0-9./]+[a-zA-Z0-9./]*'), '', s)
+    s = re.sub("\?{2,}", "", s)
+    # s = re.sub("（", ",", s)
+    # s = re.sub("）", ",", s)
+    s = re.sub(" \(", "（", s)
+    s = re.sub("\) ", "）", s)
+    s = re.sub("\u3000", "", s)
+    # s = re.sub(" ", "", s)
+    r4 = re.compile('\d{4}[-/年](\d{2}([-/月]\d{2}[日]{0,1}){0,1}){0,1}')  # 日期
+    s = re.sub(r4, "▲", s)
+    return s
+
 
 data = pd.read_csv(data_path, encoding='utf-8', sep=sep, index_col=None, header=None,
                    names=['id', 'text', 'Q', 'A'], quoting=csv.QUOTE_NONE)
@@ -69,6 +88,8 @@ print('原始数据有%d行' % len(data))
 # 存在仅id不同的行,
 # 去除text,Q,A相同的重复行
 data.drop_duplicates(subset=['text', 'Q', 'A'], keep='first', inplace=True)
+# 去除特殊字符
+data["text"] = data["text"].apply(lambda x: delete_tag(x))
 data.index = range(len(data))
 print('去除text,Q,A重复的行后，还有%d行' % len(data))
 # NaN替换成'NaN'
@@ -79,7 +100,6 @@ print('共%d种text' % len(set(data.text)))
 data.drop(labels='A', axis=1, inplace=True)
 data.drop(labels='id', axis=1, inplace=True)
 
-# 改成二分类的数据集 text，Q，label
 id2label = sorted(list(set(data.Q)))  # 里面有NaN
 id2label.remove('NaN')
 label2id = {v: i for i, v in enumerate(id2label)}
@@ -133,6 +153,10 @@ class OurTokenizer(Tokenizer):
                 R.append(c)
             elif self._is_space(c):
                 R.append('[unused1]')  # space类用未经训练的[unused1]表示
+            elif c == 'S':
+                R.append('[unused2]')
+            elif c == 'T':
+                R.append('[unused3]')
             else:
                 R.append('[UNK]')  # 剩余的字符是[UNK]
         return R
@@ -144,7 +168,7 @@ tokenizer = OurTokenizer(token_dict)
 # 让每条文本的长度相同，用0填充
 def seq_padding(X, padding=0):
     L = [len(x) for x in X]
-    ML = config.max_length
+    ML = max(L)
     return np.array([
         np.concatenate([x, [padding] * (ML - len(x))]) if len(x) < ML else x for x in X
     ])
@@ -188,12 +212,11 @@ def f1_metric(y_true, y_pred):
 def basic_network():
     bert_model = load_trained_model_from_checkpoint(config.bert_config_path,
                                                     config.bert_ckpt_path,
-                                                    seq_len=config.max_length,
                                                     training=False,
                                                     trainable=True)
 
-    x_1 = keras.layers.Input(shape=(config.max_length,), name='input_x1')
-    x_2 = keras.layers.Input(shape=(config.max_length,), name='input_x2')
+    x_1 = keras.layers.Input(shape=(None,), name='input_x1')
+    x_2 = keras.layers.Input(shape=(None,), name='input_x2')
 
     bert_out = bert_model([x_1, x_2])  # 输出维度为(batch_size,max_length,768)
 
@@ -207,77 +230,6 @@ def basic_network():
         optimizer=keras.optimizers.Adam(config.learning_rate),
         loss='binary_crossentropy',
         metrics=['accuracy', f1_metric]
-    )
-    model.summary()
-    return model
-
-
-class MyLayer(Layer):
-    """输入bert最后一层的embedding和位置信息token_ids
-
-    在这一层将embedding的第一位即cls和句子B的embedding的平均值拼接
-
-    # Arguments
-        result: 输出的矩阵纬度（batchsize,output_dim).
-    """
-
-    def __init__(self, **kwargs):
-        super(MyLayer, self).__init__(**kwargs)
-
-    def build(self, input_shape):  # 2*(batch_size,max_length,768)
-        assert isinstance(input_shape, list)
-        # Create a trainable weight variable for this layer.
-        # no need
-        super(MyLayer, self).build(input_shape)  # Be sure to call this at the end
-
-    def call(self, x):
-        assert isinstance(x, list)
-        bert_out, x1 = x
-        pooled_output = bert_out[:, 0]  # （batch_size，hidden_​​size）
-        target = tf.multiply(bert_out, K.expand_dims(x1, -1))  # 提取句子B（公司实体）的sequence_output  expand_dims和unsqueeze
-        # sequence方向上求和,形状为（batch_size，sequenceB_length，hidden_​​size）-》（batch_size，hidden_​​size）tf.div
-        target = K.sum(target, axis=1)
-        target_div = K.sum(x1, axis=1)  # 得到句子B的长度
-        target = tf.div(target, K.expand_dims(target_div, -1))  # 获得平均数，现状（batch_size，hidden_​​size） tf.div divide
-        target_cls = K.concatenate([target, pooled_output], axis=-1)  # 拼接
-
-        return target_cls
-
-    def compute_output_shape(self, input_shape):
-        assert isinstance(input_shape, list)
-        shape_a, shape_b = input_shape
-        return (shape_a[0], shape_a[-1] * 2)  # (batch_size,768*2)
-
-
-def cls_context_network():
-    bert_model = load_trained_model_from_checkpoint(config.bert_config_path,
-                                                    config.bert_ckpt_path,
-                                                    seq_len=config.max_length,
-                                                    training=False,
-                                                    trainable=True,
-                                                    output_layer_num=1  # 选几层
-                                                    )
-    # 选择某些层进行训练
-    # bert_model.summary()
-    # for l in bert_model.layers:
-    #     # print(l)
-    #     l.trainable = True
-    x1 = keras.layers.Input(shape=(config.max_length,))  # 位置000111000
-    x2 = keras.layers.Input(shape=(config.max_length,))  # 字id
-    bert_out = bert_model([x1, x2])  # 输出维度为(batch_size,max_length,768)
-    print(bert_out.shape)
-    # dense=bert_model.get_layer('NSP-Dense')
-    bert_out = keras.layers.Lambda(lambda bert_out: bert_out)(bert_out)
-    bert_out = MyLayer()([bert_out, x1])
-    # bert_out = keras.layers.Lambda(lambda bert_out: bert_out[:, 0])(bert_out)
-    # bert_out=keras.layers.Dropout(0.2)(bert_out)
-    outputs = keras.layers.Dense(1, activation='sigmoid')(bert_out)
-
-    model = keras.models.Model([x1, x2], outputs)
-    model.compile(
-        optimizer=keras.optimizers.Adam(config.learning_rate),
-        loss='binary_crossentropy',
-        metrics=['accuracy', f1_score]
     )
     model.summary()
     return model
@@ -301,17 +253,17 @@ class data_generator:
             X1, X2, P = [], [], []
             for i in idxs:
                 d = self.data[i]
-                text, label = d[0], d[1]
+                text, label = d[0][:config.max_length], d[1]
                 # 构造位置id和字id
-                token_ids, segment_ids = tokenizer.encode(first=text, max_len=config.max_length)
+                token_ids, segment_ids = tokenizer.encode(first=text)
                 X1.append(token_ids)
                 X2.append(segment_ids)
                 P.append(label)
                 if len(X1) == self.batch_size or i == idxs[-1]:
-                    # X1 = seq_padding(X1)
-                    # X2 = seq_padding(X2)
-                    X1 = np.array(X1)
-                    X2 = np.array(X2)
+                    X1 = seq_padding(X1)
+                    X2 = seq_padding(X2)
+                    # X1 = np.array(X1)
+                    # X2 = np.array(X2)
                     P = np.array(P)
                     yield [X1, X2], P
                     X1, X2, P = [], [], []
@@ -336,9 +288,9 @@ def test(text_in, result_path, add=False):
     with open(result_path, 'w') as fout:
         for d in tqdm(iter(text_in)):
             id = d[0]
-            text_in = d[1]
+            text_in = d[1][:config.max_length]
             # 构造位置id和字id
-            token_ids, segment_ids = tokenizer.encode(first=text_in, max_len=config.max_length)
+            token_ids, segment_ids = tokenizer.encode(first=text_in)
             p = train_model.predict([[token_ids], [segment_ids]])[0]
             tags = [id2label[i] for i, v in enumerate(p) if v > 0.5]
             if add:
@@ -354,7 +306,8 @@ def test(text_in, result_path, add=False):
 
 
 def extract_entity(text_in, add=False):
-    token_ids, segment_ids = tokenizer.encode(first=text_in, max_len=config.max_length)
+    text_in = text_in[: config.max_length]
+    token_ids, segment_ids = tokenizer.encode(first=text_in)
     p = train_model.predict([[token_ids], [segment_ids]])[0]
     if add:
         # 显式出现的词
@@ -416,7 +369,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
     dev_D = data_generator(dev_)
 
     train_model = basic_network()
-    model_path = os.path.join(config.ckpt_path, "modify_bert_model-" + str(i) + ".weights")
+    model_path = os.path.join(config.ckpt_path, "modify_bert_model_" + str(i) + ".weights")
     if not os.path.exists(model_path):
         checkpoint = keras.callbacks.ModelCheckpoint(model_path,
                                                      monitor='val_f1_metric',
@@ -438,8 +391,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
                                   validation_data=dev_D.__iter__(),
                                   validation_steps=len(dev_D)
                                   )
-    else:
-        train_model.load_weights(model_path)
+    train_model.load_weights(model_path)
     print('val')
     score.append(evaluate(dev_))
     print("val evluation", score[-1])
@@ -450,7 +402,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
     print("val score_add:", score_add)
     print("val mean score_add:", np.mean(score_add, axis=0))
     result_path = os.path.join(config.save_path, "result_k" + str(i) + ".csv")
-    if not os.path.exists(result_path):
+    if i == 0 or not os.path.exists(result_path):
         print('test')
         test(test_data, result_path, add=False)
 

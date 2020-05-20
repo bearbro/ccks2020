@@ -29,15 +29,15 @@ config_path = os.path.join('../bert', bert_kind, 'bert_config.json')
 checkpoint_path = os.path.join('../bert', bert_kind, 'bert_model.ckpt')
 dict_path = os.path.join('../bert', bert_kind, 'vocab.txt')
 
-# model_save_path = "./data/ccks2019_ckt/"
-# train_data_path='./data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_train.csv'
-# test_data_path='./data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_eval.csv'
-# sep = ','
+model_save_path = "./data/ccks2019_ckt/"
+train_data_path = './data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_train.csv'
+test_data_path = './data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_eval.csv'
+sep = ','
 
-model_save_path = "./data/ccks2020_ckt_squad/"
-train_data_path = './data/event_entity_train_data_label.csv'
-test_data_path = './data/classificationN_save/result_k0.csv'
-sep = '\t'
+# model_save_path = "./data/ccks2020_ckt_squad/"
+# train_data_path = './data/event_entity_train_data_label.csv'
+# test_data_path = './data/classificationN_save/result_k0.csv'
+# sep = '\t'
 
 if not os.path.exists(model_save_path):
     os.mkdir(model_save_path)
@@ -58,6 +58,10 @@ class OurTokenizer(Tokenizer):
                 R.append(c)
             elif self._is_space(c):
                 R.append('[unused1]')  # space类用未经训练的[unused1]表示
+            elif c == 'S':
+                R.append('[unused2]')
+            elif c == 'T':
+                R.append('[unused3]')
             else:
                 R.append('[UNK]')  # 剩余的字符是[UNK]
         return R
@@ -68,7 +72,7 @@ tokenizer = OurTokenizer(token_dict)
 
 def seq_padding(X, padding=0):
     L = [len(x) for x in X]
-    ML = maxlen
+    ML = max(L)
     return np.array([
         np.concatenate([x, [padding] * (ML - len(x))]) if len(x) < ML else x for x in X
     ])
@@ -107,6 +111,10 @@ def delete_tag(s):
 data = pd.read_csv(train_data_path, encoding='utf-8', sep=sep,
                    names=['id', 'text', 'Q', 'A'], quoting=csv.QUOTE_NONE)
 
+data["text"] = data["text"].map(lambda x: x[1:-1])
+data["Q"] = data["Q"].map(lambda x: x[1:-1])
+data["A"] = data["A"].map(lambda x: x[1:-1])
+
 data['text'] = [delete_tag(s) for s in data.text]
 # NaN替换成'NaN'
 data.fillna('NaN', inplace=True)
@@ -121,6 +129,7 @@ entity_train = list(set(data['A'].values.tolist()))
 data.drop("id", axis=1, inplace=True)  # drop id
 data.drop_duplicates(['text', 'Q', 'A'], keep='first', inplace=True)  # drop duplicates
 data["A"] = data["A"].map(lambda x: str(x).replace('NaN', ''))
+
 data["e"] = data.apply(lambda row: 1 if row[2] in row[0] else 0, axis=1)
 
 data = data[data["e"] == 1]
@@ -201,16 +210,16 @@ class data_generator:
 
 # 定义模型
 
-def modify_bert_model():
+def modify_bert_model0():
     bert_model = load_trained_model_from_checkpoint(config_path, checkpoint_path)
 
     for l in bert_model.layers:
         l.trainable = True
 
-    x1_in = Input(shape=(maxlen,))  # 待识别句子输入
-    x2_in = Input(shape=(maxlen,))  # 待识别句子输入000011100
-    s1_in = Input(shape=(maxlen,))  # 实体左边界（标签）
-    s2_in = Input(shape=(maxlen,))  # 实体右边界（标签）
+    x1_in = Input(shape=(None,))  # 待识别句子输入
+    x2_in = Input(shape=(None,))  # 待识别句子输入000011100
+    s1_in = Input(shape=(None,))  # 实体左边界（标签）
+    s2_in = Input(shape=(None,))  # 实体右边界（标签）
 
     x1, x2, s1, s2 = x1_in, x2_in, s1_in, s2_in
     #   用1标记text 那不就是x2吗。。。
@@ -220,9 +229,15 @@ def modify_bert_model():
     ps1x = Dense(64, use_bias=False)(x)
     ps1 = Dense(1, use_bias=False)(ps1x)  # todo
     # ps1 = Lambda(lambda x: x[0][..., 0] - (1 - x[1][..., 0]) * 1e10)([ps1, x_mask])
-    ps1 = Lambda(lambda x: x[0][..., 0] * x[1][..., 0])([ps1, x_mask])
+    ps1 = Lambda(lambda x: x[0][..., 0] * x[1][..., 0])([ps1, x_mask])  # (batch_size,max_length,1)
+    # ps14ps2 = Lambda(lambda x:K.cast(K.equal(K.expand_dims(x, 2), K.max(x)), 'float32'))(ps1)
+    ps14ps2 = Lambda(lambda x: K.cast(K.equal(x, K.max(x)), 'int32'))(ps1)
     ps2x = Dense(64, use_bias=False)(x)
     ps2 = Dense(1, use_bias=False)(ps2x)
+    ps14ps2 = Lambda(lambda x: K.cast(K.cumsum(x, 1), 'float32'))(ps14ps2)
+    ps14ps2 = Lambda(lambda x: K.expand_dims(x, 2))(ps14ps2)
+    ps2 = Lambda(lambda x: x[0][..., 0] * x[1][..., 0])([ps2, ps14ps2])
+    ps2 = Lambda(lambda x: K.expand_dims(x, 2))(ps2)
     ps2 = Lambda(lambda x: x[0][..., 0] * x[1][..., 0])([ps2, x_mask])
 
     model = Model([x1_in, x2_in], [ps1, ps2])
@@ -230,6 +245,112 @@ def modify_bert_model():
 
     loss1 = K.mean(K.categorical_crossentropy(s1_in, ps1, from_logits=True))
     # ps2 -= (1 - K.cumsum(s1, 1)) * 1e10
+    loss2 = K.mean(K.categorical_crossentropy(s2_in, ps2, from_logits=True))
+    loss = loss1 + loss2
+
+    train_model.add_loss(loss)
+    train_model.compile(optimizer=Adam(learning_rate), metrics=['accuracy'])
+    train_model.summary()
+    return model, train_model
+
+
+def modify_bert_model1():
+    bert_model = load_trained_model_from_checkpoint(config_path, checkpoint_path, output_layer_num=4)
+
+    for l in bert_model.layers:
+        l.trainable = True
+
+    x1_in = Input(shape=(None,))  # 待识别句子输入
+    x2_in = Input(shape=(None,))  # 待识别句子输入000011100
+    s1_in = Input(shape=(None,))  # 实体左边界（标签）
+    s2_in = Input(shape=(None,))  # 实体右边界（标签）
+
+    x1, x2, s1, s2 = x1_in, x2_in, s1_in, s2_in
+    #   用1标记text 那不就是x2吗。。。
+    x_mask = Lambda(lambda x: K.cast(K.equal(K.expand_dims(x, 2), 1), 'float32'))(x2)  # 00000111111111100
+    x = bert_model([x1, x2])  # 输出维度为(batch_size,max_length,768)
+
+    ps1x = Dense(64, use_bias=False)(x)
+    ps1 = Dense(1, use_bias=False)(ps1x)  # todo
+    # ps1 = Lambda(lambda x: x[0][..., 0] - (1 - x[1][..., 0]) * 1e10)([ps1, x_mask])
+    ps1 = Lambda(lambda x: x[0][..., 0] * x[1][..., 0])([ps1, x_mask])  # (batch_size,max_length,1)
+    ps2x = Dense(64, use_bias=False)(x)
+    ps2 = Dense(1, use_bias=False)(ps2x)
+    ps2 = Lambda(lambda x: x[0][..., 0] * x[1][..., 0])([ps2, x_mask])
+
+    model = Model([x1_in, x2_in], [ps1, ps2])
+    train_model = Model([x1_in, x2_in, s1_in, s2_in], [ps1, ps2])
+
+    # loss1 = K.mean(K.categorical_crossentropy(s1_in, ps1, from_logits=True))
+    # # ps2 -= (1 - K.cumsum(s1, 1)) * 1e10
+    # loss2 = K.mean(K.categorical_crossentropy(s2_in, ps2, from_logits=True))
+
+    # r+y-x
+    r = 0.5
+
+    def get_loss(s_in, ps, r):
+        py = K.softmax(ps)
+        x = K.batch_dot(s_in, py, axes=1)
+        x = py - x + r
+        x = K.clip(x, 0, None)
+        loss = K.sum(x)
+        return loss
+
+    loss1 = get_loss(s1_in, ps1, r)
+    loss2 = get_loss(s2_in, ps2, r)
+
+    loss = loss1 + loss2
+
+    train_model.add_loss(loss)
+    train_model.compile(optimizer=Adam(learning_rate), metrics=['accuracy'])
+    train_model.summary()
+    return model, train_model
+
+
+def modify_bert_model():  # BiGRU + DNN #
+
+    bert_model = load_trained_model_from_checkpoint(config_path, checkpoint_path)
+
+    for l in bert_model.layers:
+        l.trainable = True
+
+    x1_in = Input(shape=(None,))  # 待识别句子输入
+    x2_in = Input(shape=(None,))  # 待识别句子输入
+    s1_in = Input(shape=(None,))  # 实体左边界（标签）
+    s2_in = Input(shape=(None,))  # 实体右边界（标签）
+
+    x1, x2, s1, s2 = x1_in, x2_in, s1_in, s2_in
+    x_mask = Lambda(lambda x: K.cast(K.equal(K.expand_dims(x, 2), 1), 'float32'))(x2)  # 00000111111111100
+    x = bert_model([x1, x2])
+
+    l = Lambda(lambda t: t[:, -1])(x)
+    x = Add()([x, l])
+    x = Dropout(0.1)(x)
+    x = Lambda(lambda x: x[0] * x[1])([x, x_mask])
+
+    x = SpatialDropout1D(0.1)(x)
+    x = Bidirectional(CuDNNGRU(200, return_sequences=True))(x)
+    x = Lambda(lambda x: x[0] * x[1])([x, x_mask])
+    x = Bidirectional(CuDNNGRU(200, return_sequences=True))(x)
+    x = Lambda(lambda x: x[0] * x[1])([x, x_mask])
+
+    x = Dense(1024, use_bias=False, activation='tanh')(x)
+    x = Dropout(0.2)(x)
+    x = Dense(64, use_bias=False, activation='tanh')(x)
+    x = Dropout(0.2)(x)
+    x = Dense(8, use_bias=False, activation='tanh')(x)
+
+    ps1 = Dense(1, use_bias=False)(x)
+    ps1 = Lambda(lambda x: x[0][..., 0] - (1 - x[1][..., 0]) * 1e10)([ps1, x_mask])
+    ps2 = Dense(1, use_bias=False)(x)
+    ps2 = Lambda(lambda x: x[0][..., 0] - (1 - x[1][..., 0]) * 1e10)([ps2, x_mask])
+
+    model = Model([x1_in, x2_in], [ps1, ps2])
+
+    train_model = Model([x1_in, x2_in, s1_in, s2_in], [ps1, ps2])
+
+    loss1 = K.mean(K.categorical_crossentropy(s1_in, ps1, from_logits=True))
+    ps2 -= (1 - K.cumsum(s1, 1)) * 1e10
     loss2 = K.mean(K.categorical_crossentropy(s2_in, ps2, from_logits=True))
     loss = loss1 + loss2
 
@@ -252,7 +373,7 @@ def extract_entity(text_in, c_in):  # todo
         return 'NaN'
     text_in = text_in[:maxlen - len(c_in) - 3]
     _tokens = tokenizer.tokenize(c_in, text_in)
-    _x1, _x2 = tokenizer.encode(c_in, text_in, maxlen)
+    _x1, _x2 = tokenizer.encode(c_in, text_in)
     _x1, _x2 = np.array([_x1]), np.array([_x2])
     _ps1, _ps2 = model.predict([_x1, _x2])
     _ps1, _ps2 = softmax(_ps1[0]), softmax(_ps2[0])
@@ -265,7 +386,8 @@ def extract_entity(text_in, c_in):  # todo
         if len(_t) == 1 and re.findall(u'[^\u4e00-\u9fa5a-zA-Z0-9\*]', _t) and _t not in additional_chars:
             break
     end = _ps2[start:end + 1].argmax() + start
-    a = ''.join(_tokens[start: end + 1])
+    # [cls][Q][sep][text][sep]
+    a = text_in[-(1 + len(c_in) + 1) + start:-(1 + len(c_in) + 1) + end + 1]
     print(a)
     return a
 
@@ -370,7 +492,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
     dev_D = data_generator(dev_)
 
     model_path = os.path.join(model_save_path, "modify_bert_model" + str(i) + ".weights")
-    if not os.path.exists(model_path):
+    if True or not os.path.exists(model_path):
         evaluator = Evaluate(dev_, model_path)
         train_model.fit_generator(train_D.__iter__(),
                                   steps_per_epoch=len(train_D),
@@ -379,10 +501,10 @@ for i, (train_fold, test_fold) in enumerate(kf):
                                   validation_data=dev_D.__iter__(),
                                   validation_steps=len(dev_D)
                                   )
-    else:
-        print("load best model weights ...")
-        train_model.load_weights(model_path)
-        model.load_weights(model_path)
+
+    print("load best model weights ...")
+    train_model.load_weights(model_path)
+    model.load_weights(model_path)
 
     print('val')
     score.append(evaluate(dev_))
