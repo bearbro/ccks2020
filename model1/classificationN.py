@@ -62,7 +62,25 @@ for pathi in [config.ckpt_path, config.save_path]:
 # data_path = './data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_train.csv'
 # data_test_path = './data/ccks2019/ccks2019_event_entity_extract/event_type_entity_extract_eval.csv'
 # sep = ','
+
+def strQ2B(ustring):
+    """把字符串全角转半角"""
+    ss = []
+    for s in ustring:
+        rstring = ""
+        for uchar in s:
+            inside_code = ord(uchar)
+            if inside_code == 12288:  # 全角空格直接转换
+                inside_code = 32
+            elif (inside_code >= 65281 and inside_code <= 65374):  # 全角字符（除空格）根据关系转化
+                inside_code -= 65248
+            rstring += chr(inside_code)
+        ss.append(rstring)
+    return ''.join(ss)
+
+
 def delete_tag(s):
+    # s=strQ2B(s)
     s = re.sub('\{IMG:.?.?.?\}', '', s)  # 图片
     s = re.sub(re.compile(r'[a-zA-Z]+://[^\s]+'), '', s)  # 网址
     s = re.sub(re.compile('<.*?>'), '', s)  # 网页标签
@@ -94,6 +112,7 @@ data.index = range(len(data))
 print('去除text,Q,A重复的行后，还有%d行' % len(data))
 # NaN替换成'NaN'
 data.fillna('NaN', inplace=True)
+data = data[data.Q != 'NaN']
 print('共%d种text' % len(set(data.text)))
 
 # 去除A列
@@ -101,7 +120,8 @@ data.drop(labels='A', axis=1, inplace=True)
 data.drop(labels='id', axis=1, inplace=True)
 
 id2label = sorted(list(set(data.Q)))  # 里面有NaN
-id2label.remove('NaN')
+if 'NaN' in id2label:
+    id2label.remove('NaN')
 label2id = {v: i for i, v in enumerate(id2label)}
 print('共%d种Q' % len(id2label))
 
