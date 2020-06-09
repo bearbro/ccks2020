@@ -16,6 +16,7 @@ from keras.models import Model
 from keras.optimizers import Adam, SGD
 from keras_bert import load_trained_model_from_checkpoint, Tokenizer
 from keras_bert.backend import keras
+from keras_contrib.layers import CRF
 from sklearn.model_selection import KFold, StratifiedKFold
 from tqdm import tqdm
 from tqdm import tqdm
@@ -29,8 +30,8 @@ from random import choice
 
 import tensorflow as tf
 
-gpu_options = tf.GPUOptions(allow_growth=True)
-sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
+# gpu_options = tf.GPUOptions(allow_growth=True)
+# sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
 
 maxlen = 256  # 140
 learning_rate = 5e-5  # 5e-5
@@ -41,7 +42,8 @@ config_path = os.path.join('../bert', bert_kind, 'bert_config.json')
 checkpoint_path = os.path.join('../bert', bert_kind, 'bert_model.ckpt')
 dict_path = os.path.join('../bert', bert_kind, 'vocab.txt')
 
-model_save_path = "./data/ccks2020_ckt_256/"
+model_cv_path = "./data/"
+model_save_path = "./data/ccks2020_ckt_256_crf/"
 train_data_path = '../model1/data/event_entity_train_data_label.csv'
 test_data_path = '../model1/data/event_entity_dev_data.csv'
 sep = '\t'
@@ -155,7 +157,7 @@ for id, t in zip(D["id"], D["text"]):
 print('最终测试集大小:%d' % len(test_data))
 print('-' * 30)
 
-BIOtag = ['O', 'B', 'I']
+BIOtag = ['O', 'B', 'I']  # todo 可以改用BIOES
 tag2id = {v: i for i, v in enumerate(BIOtag)}
 
 
@@ -270,6 +272,35 @@ def modify_bert_model_3():
     return model
 
 
+def modify_bert_model_3_crf():
+    bert_model = load_trained_model_from_checkpoint(config_path, checkpoint_path)
+
+    for l in bert_model.layers:
+        l.trainable = True
+
+    x1_in = Input(shape=(None,))  # 待识别句子输入
+    x2_in = Input(shape=(None,))  # 待识别句子输入
+
+    x1, x2 = x1_in, x2_in
+
+    bert_out = bert_model([x1, x2])  # [batch,maxL,768]
+    # todo [batch,maxL,768] -》[batch,maxL,3]
+    xlen = 1
+    a = Dense(units=xlen, use_bias=False, activation='tanh')(bert_out)  # [batch,maxL,1]
+    b = Dense(units=xlen, use_bias=False, activation='tanh')(bert_out)
+    c = Dense(units=xlen, use_bias=False, activation='tanh')(bert_out)
+    outputs = Lambda(lambda x: K.concatenate(x, axis=-1))([a, b, c])  # [batch,maxL,3]
+    # crf
+    crf = CRF(len(BIOtag), sparse_target=True)
+    outputs = crf(outputs)
+
+    model = keras.models.Model([x1_in, x2_in], outputs, name='basic_crf_model')
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate), loss=crf.loss_function, metrics=[crf.accuracy])
+    model.summary()
+
+    return model
+
+
 def decode(text_in, p_in):
     '''解码函数'''
     p = np.argmax(p_in, axis=-1)
@@ -371,7 +402,30 @@ class Evaluate(Callback):
 def test(test_data, result_path):
     F = open(result_path, 'w', encoding='utf-8')
     for d in tqdm(iter(test_data)):
-        s = u'%s\t%s\t%s\n' % (d[0], d[1], extract_entity(d[1]))
+        s = u'%s,%s\n' % (d[0], extract_entity(d[1]))
+        F.write(s)
+    F.close()
+
+
+def test_cv(test_data):
+    '''预测'''
+    r = []
+    for d in tqdm(iter(test_data)):
+        text_in = d[1][:maxlen]
+        _tokens = tokenizer.tokenize(text_in)
+        _x1, _x2 = tokenizer.encode(text_in)
+        _x1, _x2 = np.array([_x1]), np.array([_x2])
+        _p = model.predict([_x1, _x2])[0]
+        r.append(_p)
+    return r
+
+
+def test_cv_decode(test_data, result, result_path):
+    '''获得cv的结果'''
+    result_avg = np.mean(result, axis=0)
+    F = open(result_path, 'w', encoding='utf-8')
+    for idx, d in enumerate(test_data):
+        s = u'%s,%s\n' % (d[0], decode(d[1], result_avg[idx]))
         F.write(s)
     F.close()
 
@@ -380,7 +434,7 @@ def test(test_data, result_path):
 flodnums = 10
 
 # 拆分验证集
-cv_path = os.path.join(model_save_path, 'cv.pkl')
+cv_path = os.path.join(model_cv_path, 'cv.pkl')
 if not os.path.exists(cv_path):
     kf = KFold(n_splits=flodnums, shuffle=True, random_state=520).split(train_data)
     # save
@@ -399,16 +453,17 @@ else:
 score = []
 
 for i, (train_fold, test_fold) in enumerate(kf):
+    # break
     print("kFlod ", i, "/", flodnums)
     train_ = [train_data[i] for i in train_fold]
     dev_ = [train_data[i] for i in test_fold]
 
-    model = modify_bert_model_3()
+    model = modify_bert_model_3_crf()
 
     train_D = data_generator(train_)
     dev_D = data_generator(dev_)
 
-    model_path = os.path.join(model_save_path, "modify_bert_model" + str(i) + ".weights")
+    model_path = os.path.join(model_save_path, "modify_bert_crf_model" + str(i) + ".weights")
     if not os.path.exists(model_path):
         evaluator = Evaluate(dev_, model_path)
         model.fit_generator(train_D.__iter__(),
@@ -426,7 +481,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
     score.append(evaluate(dev_))
     print("valid evluation:", score[-1])
     print("valid score:", score)
-    print("valid mean score:", np.mean(score))
+    print("valid mean score:", np.mean(score, axis=0))
     print('test')
     result_path = os.path.join(model_save_path, "result_k" + str(i) + ".txt")
     test(test_data, result_path)
@@ -436,3 +491,21 @@ for i, (train_fold, test_fold) in enumerate(kf):
     gc.collect()
     K.clear_session()
     a = 0 / 0
+
+#  集成答案
+result = []
+for i, (train_fold, test_fold) in enumerate(kf):
+    print("kFlod ", i, "/", flodnums)
+    model = modify_bert_model_3()
+    model_path = os.path.join(model_save_path, "modify_bert_model" + str(i) + ".weights")
+    print("load best model weights ...")
+    model.load_weights(model_path)
+    resulti = test_cv(test_data)
+    result.append(resulti)
+    gc.collect()
+    del model
+    gc.collect()
+    K.clear_session()
+
+result_path = os.path.join(model_save_path, "result_k" + 'cv' + ".txt")
+test_cv_decode(test_data, result, result_path)  # todo 优化
