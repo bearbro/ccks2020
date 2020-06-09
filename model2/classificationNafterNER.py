@@ -1,5 +1,3 @@
-# 文本  多标签分类
-# todo 优化 把长句子切成两部分
 import gc
 import pickle
 
@@ -32,11 +30,11 @@ def list_find(list1, list2):
     return -1
 
 
-gpu_options = tf.GPUOptions(allow_growth=True)
-sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
+# gpu_options = tf.GPUOptions(allow_growth=True)
+# sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
 
-data_path = '../model1/data/event_entity_train_data_label.csv'
-data_test_path = '../model1/data/event_entity_dev_data.csv'
+data_path = '../model2/data/event_entity_train_data_label.csv'
+data_test_path = '../model2/data/event_entity_dev_data.csv'
 sep = '\t'
 
 
@@ -45,8 +43,8 @@ class Config:
     bert_config_path = os.path.join(bert_path, 'bert_config.json')
     bert_ckpt_path = os.path.join(bert_path, 'bert_model.ckpt')
     bert_dict_path = os.path.join(bert_path, 'vocab.txt')
-    ckpt_path = '../model1/data/classificationN_ckpt_after_ner_256'
-    save_path = '../model1/data/classificationN_save_after_ner_256'
+    ckpt_path = '../model2/data/classificationN_ckpt_after_ner_256'
+    save_path = '../model2/data/classificationN_save_after_ner_256'
     max_length = 256
     batch_size = 16
     learning_rate = 3e-5
@@ -147,7 +145,7 @@ data【text，A，Q/label】
 # 测试集 todo
 test_data = pd.read_csv(data_test_path, encoding='utf-8', sep=sep, index_col=None, header=None,
                         names=['id', 'text'], quoting=csv.QUOTE_NONE)
-data_test_path_ner = '../model2/data/post_ensemble_result.csv'
+data_test_path_ner = '../model2/data/ccks2020_ckt_256/result_k0.txt'
 test_A = pd.read_csv(data_test_path_ner, encoding='utf-8', sep=',', index_col=None, header=None,
                      names=['id', 'A'], quoting=csv.QUOTE_NONE)
 test_data = pd.merge(test_data, test_A, how='inner', on=['id'])
