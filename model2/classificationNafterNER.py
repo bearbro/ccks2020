@@ -145,7 +145,7 @@ data【text，A，Q/label】
 # 测试集 todo
 test_data = pd.read_csv(data_test_path, encoding='utf-8', sep=sep, index_col=None, header=None,
                         names=['id', 'text'], quoting=csv.QUOTE_NONE)
-data_test_path_ner = '../model2/data/ccks2020_ckt_256/result_k0.txt'
+data_test_path_ner = '../model2/data/ccks2020_ckt_256/result_kcv.txt'
 test_A = pd.read_csv(data_test_path_ner, encoding='utf-8', sep=',', index_col=None, header=None,
                      names=['id', 'A'], quoting=csv.QUOTE_NONE)
 test_data = pd.merge(test_data, test_A, how='inner', on=['id'])
@@ -341,7 +341,8 @@ def test_cv(text_in, add=False):
         xx.sort()
         if d[2] == 'NaN':
             xx = []
-        tn = 0
+            r.append([0] * len(id2label))
+
         for a_in in xx:
             text_in = d[1][:config.max_length - len(a_in) - 3]
             # 构造位置id和字id
@@ -355,14 +356,11 @@ def test_cv(text_in, add=False):
                 #     if tag not in tags and have(text_in, tag):  # 硬规则 可优化
                 #         tags.append(tag)
 
-            tn += 1
-        if tn == 0:
-            r.append([0] * len(id2label))
     return r
 
 
-def test_cv_decode(text_in, result, result_path):
-    '''获得cv的结果'''
+def test_cv_decode_avg(text_in, result, result_path):
+    '''获得cv的结果 平均'''
     result_avg = np.mean(result, axis=0)
     with open(result_path, 'w') as fout:
         ri = 0
@@ -372,6 +370,7 @@ def test_cv_decode(text_in, result, result_path):
             xx.sort()
             if d[2] == 'NaN':
                 xx = []
+                ri += 1
             tn = 0
             for a_in in xx:
                 p = result_avg[ri]
@@ -382,7 +381,34 @@ def test_cv_decode(text_in, result, result_path):
                 ri += 1
             if tn == 0:
                 fout.write('%d\t%s\t%s\n' % (id, 'NaN', 'NaN'))
+
+
+def test_cv_decode_count(text_in, result, result_path):
+    '''获得cv的结果 投票'''
+    result = np.array(result)
+    for i in result:
+        i[i > 0.5] = 1
+        i[i <= 0.5] = 0
+    result_avg = np.mean(result, axis=0)
+    with open(result_path, 'w') as fout:
+        ri = 0
+        for d in tqdm(iter(text_in)):
+            id = d[0]
+            xx = list(d[2].split(';'))
+            xx.sort()
+            if d[2] == 'NaN':
+                xx = []
                 ri += 1
+            tn = 0
+            for a_in in xx:
+                p = result_avg[ri]
+                tags = [id2label[i] for i, v in enumerate(p) if v > 0.5]
+                for tag in tags:
+                    fout.write('%d\t%s\t%s\n' % (id, tag, a_in))
+                    tn += 1
+                ri += 1
+            if tn == 0:
+                fout.write('%d\t%s\t%s\n' % (id, 'NaN', 'NaN'))
 
 
 def extract_entity(text_in, a_in, add=False):
@@ -483,7 +509,7 @@ for i, (train_fold, test_fold) in enumerate(kf):
     # print("val evluation_add", score_add[-1])
     # print("val score_add:", score_add)
     # print("val mean score_add:", np.mean(score_add, axis=0))
-    result_path = os.path.join(config.save_path, "result_k" + str(i) + ".csv")
+    result_path = os.path.join(config.save_path, "result_cv_k" + str(i) + ".csv")
     if i == 0 or not os.path.exists(result_path):
         print('test')
         test(test_data, result_path, add=False)
@@ -507,5 +533,5 @@ for i, (train_fold, test_fold) in enumerate(kf):
     gc.collect()
     K.clear_session()
 
-result_path = os.path.join(config.save_path, "result_k" + 'cv' + ".txt")
-test_cv_decode(test_data, result, result_path)  # todo 优化
+result_path = os.path.join(config.save_path, "result_cv_" + 'cv_count' + ".csv")
+test_cv_decode_count(test_data, result, result_path)  # todo 优化 avg 0.7571 count 0.7597
