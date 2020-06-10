@@ -333,6 +333,58 @@ def test(text_in, result_path, add=False):
                 fout.write('%d\t%s\t%s\n' % (id, 'NaN', 'NaN'))
 
 
+def test_cv(text_in, add=False):
+    r = []
+    for d in tqdm(iter(text_in)):
+        id = d[0]
+        xx = list(d[2].split(';'))
+        xx.sort()
+        if d[2] == 'NaN':
+            xx = []
+        tn = 0
+        for a_in in xx:
+            text_in = d[1][:config.max_length - len(a_in) - 3]
+            # 构造位置id和字id
+            token_ids, segment_ids = tokenizer.encode(first=text_in, second=a_in)
+            p = train_model.predict([[token_ids], [segment_ids]])[0]
+            r.append(p)
+            if add:
+                pass
+                # 显式出现的词
+                # for idx, tag in enumerate(id2label):
+                #     if tag not in tags and have(text_in, tag):  # 硬规则 可优化
+                #         tags.append(tag)
+
+            tn += 1
+        if tn == 0:
+            r.append([0] * len(id2label))
+    return r
+
+
+def test_cv_decode(text_in, result, result_path):
+    '''获得cv的结果'''
+    result_avg = np.mean(result, axis=0)
+    with open(result_path, 'w') as fout:
+        ri = 0
+        for d in tqdm(iter(text_in)):
+            id = d[0]
+            xx = list(d[2].split(';'))
+            xx.sort()
+            if d[2] == 'NaN':
+                xx = []
+            tn = 0
+            for a_in in xx:
+                p = result_avg[ri]
+                tags = [id2label[i] for i, v in enumerate(p) if v > 0.5]
+                for tag in tags:
+                    fout.write('%d\t%s\t%s\n' % (id, tag, a_in))
+                    tn += 1
+                ri += 1
+            if tn == 0:
+                fout.write('%d\t%s\t%s\n' % (id, 'NaN', 'NaN'))
+                ri += 1
+
+
 def extract_entity(text_in, a_in, add=False):
     text_in = text_in[:config.max_length - len(a_in) - 3]
     # 构造位置id和字id
@@ -427,10 +479,10 @@ for i, (train_fold, test_fold) in enumerate(kf):
     print("val evluation", score[-1])
     print("valid score:", score)
     print("valid mean score:", np.mean(score, axis=0))
-    score_add.append(evaluate(dev_, add=True))
-    print("val evluation_add", score_add[-1])
-    print("val score_add:", score_add)
-    print("val mean score_add:", np.mean(score_add, axis=0))
+    # score_add.append(evaluate(dev_, add=True))
+    # print("val evluation_add", score_add[-1])
+    # print("val score_add:", score_add)
+    # print("val mean score_add:", np.mean(score_add, axis=0))
     result_path = os.path.join(config.save_path, "result_k" + str(i) + ".csv")
     if i == 0 or not os.path.exists(result_path):
         print('test')
@@ -439,6 +491,21 @@ for i, (train_fold, test_fold) in enumerate(kf):
     del train_model
     gc.collect()
     K.clear_session()
-    break
 
-# todo 集成答案
+#  集成答案
+result = []
+for i, (train_fold, test_fold) in enumerate(kf):
+    print("kFlod ", i, "/", flodnums)
+    train_model = basic_network()
+    model_path = os.path.join(config.ckpt_path, "modify_bert_model_" + str(i) + ".weights")
+    print("load best model weights ...")
+    train_model.load_weights(model_path)
+    resulti = test_cv(test_data)
+    result.append(resulti)
+    gc.collect()
+    del train_model
+    gc.collect()
+    K.clear_session()
+
+result_path = os.path.join(config.save_path, "result_k" + 'cv' + ".txt")
+test_cv_decode(test_data, result, result_path)  # todo 优化
