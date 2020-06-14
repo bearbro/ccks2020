@@ -34,8 +34,8 @@ import tensorflow as tf
 # sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
 
 maxlen = 256  # 140
-learning_rate = 5e-5  # 5e-5
-min_learning_rate = 1e-5  # 1e-5
+learning_rate = 1e-5  # 5e-5
+min_learning_rate = 5e-6  # 1e-5
 bsize = 16
 bert_kind = ['chinese_L-12_H-768_A-12', 'tf-bert_wwm_ext'][0]
 config_path = os.path.join('../bert', bert_kind, 'bert_config.json')
@@ -192,8 +192,10 @@ def seq_padding(X, padding=0, wd=1):
             np.concatenate([x, [padding] * (ML - len(x))]) if len(x) < ML else x for x in X
         ])
     else:
+        padding_wd = [padding] * len(X[0][0])
+        padding_wd[tag2id['O']] = 1
         return np.array([
-            np.concatenate([x, [[padding] * len(x[0])] * (ML - len(x))]) if len(x) < ML else x for x in X
+            np.concatenate([x, [padding_wd] * (ML - len(x))]) if len(x) < ML else x for x in X
         ])
 
 
@@ -283,15 +285,20 @@ def modify_bert_model_3_crf():
 
     x1, x2 = x1_in, x2_in
 
-    bert_out = bert_model([x1, x2])  # [batch,maxL,768]
-    # todo [batch,maxL,768] -》[batch,maxL,3]
-    xlen = 1
-    a = Dense(units=xlen, use_bias=False, activation='tanh')(bert_out)  # [batch,maxL,1]
-    b = Dense(units=xlen, use_bias=False, activation='tanh')(bert_out)
-    c = Dense(units=xlen, use_bias=False, activation='tanh')(bert_out)
-    outputs = Lambda(lambda x: K.concatenate(x, axis=-1))([a, b, c])  # [batch,maxL,3]
+    outputs = bert_model([x1, x2])  # [batch,maxL,768]
+    #  [batch,maxL,768] -》[batch,maxL,len(BIOtag)]
+
+    # # Masking
+    # xm = Lambda(lambda x: tf.expand_dims(tf.clip_by_value(x1, 0, 1), -1))(x1)
+    # outputs = Lambda(lambda x: tf.multiply(x[0], x[1]))([outputs, xm])
+    # outputs = Masking(mask_value=0)(outputs)
+
+    outputs = Dense(units=len(BIOtag), use_bias=False, activation='tanh')(outputs)  # [batch,maxL,3]
+    # outputs = Lambda(lambda x: x)(outputs)
+    # outputs = Softmax()(outputs)
+
     # crf
-    crf = CRF(len(BIOtag), sparse_target=True)
+    crf = CRF(len(BIOtag), sparse_target=False)
     outputs = crf(outputs)
 
     model = keras.models.Model([x1_in, x2_in], outputs, name='basic_crf_model')
@@ -322,7 +329,8 @@ def decode(text_in, p_in):
                 r.append(ei)
                 ei = ''
     r = [i for i in r if len(i) > 1]
-    r = set(r)
+    r = list(set(r))
+    r.sort()
     return ';'.join(r)
 
 
