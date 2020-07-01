@@ -1,4 +1,4 @@
-# 先不考虑文本过长的问题
+
 # ! -*- coding: utf-8 -*-
 
 import codecs
@@ -27,15 +27,16 @@ from keras_bert import load_trained_model_from_checkpoint, Tokenizer
 import codecs
 import gc
 from random import choice
-
+# 引入Tensorboard
+from keras.callbacks import TensorBoard
 import tensorflow as tf
 
 # gpu_options = tf.GPUOptions(allow_growth=True)
 # sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
 
 maxlen = 256  # 140
-learning_rate = 1e-5  # 5e-5
-min_learning_rate = 5e-6  # 1e-5
+learning_rate = 5e-5  # 5e-5
+min_learning_rate = 1e-5  # 1e-5
 bsize = 16
 bert_kind = ['chinese_L-12_H-768_A-12', 'tf-bert_wwm_ext'][0]
 config_path = os.path.join('../bert', bert_kind, 'bert_config.json')
@@ -43,9 +44,9 @@ checkpoint_path = os.path.join('../bert', bert_kind, 'bert_model.ckpt')
 dict_path = os.path.join('../bert', bert_kind, 'vocab.txt')
 
 model_cv_path = "./data/"
-model_save_path = "./data/ccks2020_ckt_256_crf/"
-train_data_path = '../model1/data/event_entity_train_data_label.csv'
-test_data_path = '../model1/data/event_entity_dev_data.csv'
+model_save_path = "./data/ccks2020_ckt_256_bilstm_crf/"
+train_data_path = '../model2/data/event_entity_train_data_label.csv'
+test_data_path = '../model2/data/event_entity_dev_data.csv'
 sep = '\t'
 
 if not os.path.exists(model_save_path):
@@ -274,6 +275,69 @@ def modify_bert_model_3():
     return model
 
 
+def modify_bert_model_3_masking():
+    bert_model = load_trained_model_from_checkpoint(
+        config_path, checkpoint_path,
+        # output_layer_num=4
+    )
+
+    for l in bert_model.layers:
+        l.trainable = True
+
+    x1_in = Input(shape=(None,))  # 待识别句子输入
+    x2_in = Input(shape=(None,))  # 待识别句子输入
+
+    x1, x2 = x1_in, x2_in
+
+    outputs = bert_model([x1, x2])  # [batch,maxL,768]
+    # Masking
+    xm = Lambda(lambda x: tf.expand_dims(tf.clip_by_value(x1, 0, 1), -1))(x1)
+    outputs = Lambda(lambda x: tf.multiply(x[0], x[1]))([outputs, xm])
+    outputs = Masking(mask_value=0)(outputs)  # error ?
+    outputs = Dense(units=len(BIOtag), use_bias=False, activation='Softmax')(outputs)
+
+    model = keras.models.Model([x1_in, x2_in], outputs, name='basic_masking_model')
+    model.compile(
+        optimizer=keras.optimizers.Adam(learning_rate),
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
+    model.summary()
+
+    return model
+
+
+def modify_bert_model_bilstm_crf():
+    bert_model = load_trained_model_from_checkpoint(
+        config_path, checkpoint_path,
+        output_layer_num=4
+    )
+
+    for l in bert_model.layers:
+        l.trainable = True
+
+    x1_in = Input(shape=(None,))  # 待识别句子输入
+    x2_in = Input(shape=(None,))  # 待识别句子输入
+
+    x1, x2 = x1_in, x2_in
+
+    outputs = bert_model([x1, x2])  # [batch,maxL,768]
+    # Masking
+    # xm = Lambda(lambda x: tf.expand_dims(tf.clip_by_value(x1, 0, 1), -1))(x1)
+    # outputs = Lambda(lambda x: tf.multiply(x[0], x[1]))([outputs, xm])
+    # outputs = Masking(mask_value=0)(outputs)
+    outputs = Bidirectional(LSTM(units=300, return_sequences=True))(outputs)
+    outputs = Dropout(0.2)(outputs)
+    crf = CRF(len(BIOtag), sparse_target=False)
+    outputs = crf(outputs)
+
+    model = keras.models.Model([x1_in, x2_in], outputs, name='basic_bilstm_crf_model')
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate), loss=crf.loss_function, metrics=[crf.accuracy])
+    model.summary()
+
+    return model
+
+
 def modify_bert_model_3_crf():
     bert_model = load_trained_model_from_checkpoint(config_path, checkpoint_path)
 
@@ -293,7 +357,7 @@ def modify_bert_model_3_crf():
     # outputs = Lambda(lambda x: tf.multiply(x[0], x[1]))([outputs, xm])
     # outputs = Masking(mask_value=0)(outputs)
 
-    outputs = Dense(units=len(BIOtag), use_bias=False, activation='tanh')(outputs)  # [batch,maxL,3]
+    # outputs = Dense(units=len(BIOtag), use_bias=False, activation='tanh')(outputs)  # [batch,maxL,3]
     # outputs = Lambda(lambda x: x)(outputs)
     # outputs = Softmax()(outputs)
 
@@ -303,6 +367,43 @@ def modify_bert_model_3_crf():
 
     model = keras.models.Model([x1_in, x2_in], outputs, name='basic_crf_model')
     model.compile(optimizer=keras.optimizers.Adam(learning_rate), loss=crf.loss_function, metrics=[crf.accuracy])
+    model.summary()
+
+    return model
+
+
+def myf1(y_true, y_pre):
+    # todo
+    pass
+
+
+def modify_bert_model_bilstm_crf_f1():
+    bert_model = load_trained_model_from_checkpoint(
+        config_path, checkpoint_path,
+        output_layer_num=4
+    )
+
+    for l in bert_model.layers:
+        l.trainable = True
+
+    x1_in = Input(shape=(None,))  # 待识别句子输入
+    x2_in = Input(shape=(None,))  # 待识别句子输入
+
+    x1, x2 = x1_in, x2_in
+
+    outputs = bert_model([x1, x2])  # [batch,maxL,768]
+    # Masking
+    # xm = Lambda(lambda x: tf.expand_dims(tf.clip_by_value(x1, 0, 1), -1))(x1)
+    # outputs = Lambda(lambda x: tf.multiply(x[0], x[1]))([outputs, xm])
+    # outputs = Masking(mask_value=0)(outputs)
+    outputs = Bidirectional(LSTM(units=300, return_sequences=True))(outputs)
+    outputs = Dropout(0.2)(outputs)
+    crf = CRF(len(BIOtag), sparse_target=False)
+    outputs = crf(outputs)
+
+    model = keras.models.Model([x1_in, x2_in], outputs, name='basic_bilstm_crf_model')
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate), loss=crf.loss_function,
+                  metrics=[crf.accuracy, 'myf1'])
     model.summary()
 
     return model
@@ -458,29 +559,45 @@ else:
     kf = pickle.load(f)
     f.close()
 
+
 score = []
 
 for i, (train_fold, test_fold) in enumerate(kf):
+    if i != 9:
+        continue
     # break
     print("kFlod ", i, "/", flodnums)
     train_ = [train_data[i] for i in train_fold]
     dev_ = [train_data[i] for i in test_fold]
 
-    model = modify_bert_model_3_crf()
+    model = modify_bert_model_bilstm_crf()
 
     train_D = data_generator(train_)
     dev_D = data_generator(dev_)
 
-    model_path = os.path.join(model_save_path, "modify_bert_crf_model" + str(i) + ".weights")
+    model_path = os.path.join(model_save_path, "modify_bert_bilstm_crf_model" + str(i) + ".weights")
     if not os.path.exists(model_path):
+        tbCallBack = TensorBoard(log_dir=os.path.join(model_save_path, 'logs_' + str(i)),  # log 目录
+                                 histogram_freq=0,  # 按照何等频率（epoch）来计算直方图，0为不计算
+                                 batch_size=bsize,  # 用多大量的数据计算直方图
+                                 write_graph=True,  # 是否存储网络结构图
+                                 write_grads=False,  # 是否可视化梯度直方图
+                                 write_images=True,  # 是否可视化参数
+                                 embeddings_freq=0,
+                                 embeddings_layer_names=None,
+                                 embeddings_metadata=None)
+
         evaluator = Evaluate(dev_, model_path)
-        model.fit_generator(train_D.__iter__(),
-                            steps_per_epoch=len(train_D),
-                            epochs=10,
-                            callbacks=[evaluator],
-                            validation_data=dev_D.__iter__(),
-                            validation_steps=len(dev_D)
-                            )
+        H = model.fit_generator(train_D.__iter__(),
+                                steps_per_epoch=len(train_D),
+                                epochs=15,
+                                callbacks=[evaluator, tbCallBack],
+                                validation_data=dev_D.__iter__(),
+                                validation_steps=len(dev_D)
+                                )
+        f = open(model_path.replace('.weights', 'history.pkl'), 'wb')
+        pickle.dump(H, f, 4)
+        f.close()
 
     print("load best model weights ...")
     model.load_weights(model_path)
@@ -500,12 +617,16 @@ for i, (train_fold, test_fold) in enumerate(kf):
     K.clear_session()
     a = 0 / 0
 
+# %load_ext tensorboard  #使用tensorboard 扩展
+# %tensorboard --logdir logs  #定位tensorboard读取的文件目录
+
+
 #  集成答案
 result = []
 for i, (train_fold, test_fold) in enumerate(kf):
     print("kFlod ", i, "/", flodnums)
-    model = modify_bert_model_3()
-    model_path = os.path.join(model_save_path, "modify_bert_model" + str(i) + ".weights")
+    model = modify_bert_model_bilstm_crf()
+    model_path = os.path.join(model_save_path, "modify_bert_bilstm_crf_model" + str(i) + ".weights")
     print("load best model weights ...")
     model.load_weights(model_path)
     resulti = test_cv(test_data)
