@@ -206,3 +206,22 @@ print('text-(512,):%d\t%.3f%%' % (
 # 小于10 0
 # 大于512 0
 # 大于256 18
+
+### 探究训练集中企业实体在验证集中出现概率
+train_entity = set(data['A'])
+test_text = [i for i in data_test['text'] if type(i) == str]
+
+
+def independent_entity(text, entity_set):
+    for i in entity_set:
+        if str(i) in text:
+            return i
+    return None
+
+
+independent_test_text = [i for i in test_text if independent_entity(i, train_entity) == None]
+not_independent_test_text = [(i, independent_entity(i, train_entity)) for i in test_text if
+                             independent_entity(i, train_entity) != None]
+
+## 结论
+# 验证集中实体并非全新
