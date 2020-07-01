@@ -46,6 +46,7 @@ import gc
 from random import choice
 
 import tensorflow as tf
+from keras.callbacks import TensorBoard
 
 split_nums = 3
 flod_nums = 5
@@ -56,7 +57,7 @@ mistake_eps=1-p
 '''
 max_epochs = 15
 maxlen = 256  # 140
-learning_rate = 1e-4  # 5e-5
+learning_rate = 5e-5  # 5e-5
 min_learning_rate = 1e-5  # 1e-5
 bsize = 16
 bert_kind = ['chinese_L-12_H-768_A-12', 'tf-bert_wwm_ext'][0]
@@ -64,8 +65,8 @@ config_path = os.path.join('../bert', bert_kind, 'bert_config.json')
 checkpoint_path = os.path.join('../bert', bert_kind, 'bert_model.ckpt')
 dict_path = os.path.join('../bert', bert_kind, 'vocab.txt')
 
-model_cv_path = "./data_crossweight/"
-model_save_path = "./data/ccks2020_ckt_256_crossweight_crf/"
+model_cv_path = "./data/ccks2020_ckt_256_crossweight_bilstm_crf/"
+model_save_path = "./data/ccks2020_ckt_256_crossweight_bilstm_crf/"
 train_data_path = '../model2/data/event_entity_train_data_label.csv'
 test_data_path = '../model2/data/event_entity_dev_data.csv'
 sep = '\t'
@@ -351,10 +352,10 @@ def modify_bert_model_bilstm_crf():
     x1, x2 = x1_in, x2_in
 
     outputs = bert_model([x1, x2])  # [batch,maxL,768]
-    # Masking
-    xm = Lambda(lambda x: tf.expand_dims(tf.clip_by_value(x1, 0, 1), -1))(x1)
-    outputs = Lambda(lambda x: tf.multiply(x[0], x[1]))([outputs, xm])
-    outputs = Masking(mask_value=0)(outputs)
+    # # Masking
+    # xm = Lambda(lambda x: tf.expand_dims(tf.clip_by_value(x1, 0, 1), -1))(x1)
+    # outputs = Lambda(lambda x: tf.multiply(x[0], x[1]))([outputs, xm])
+    # outputs = Masking(mask_value=0)(outputs)
     outputs = Bidirectional(LSTM(units=300, return_sequences=True))(outputs)
     outputs = Dropout(0.2)(outputs)
     crf = CRF(len(BIOtag), sparse_target=False)
@@ -594,8 +595,8 @@ for split_idx in range(split_nums):
     cv_path = os.path.join(model_cv_path, 'cv_%d.pkl' % split_idx)
     if not os.path.exists(cv_path):
         kf = KFold(n_splits=flodnums, shuffle=True, random_state=split_idx).split(train_data)
-        A_list = [i[1].split(';')[0] for i in train_data]
-        kf = RandomGroupKFold_split(A_list, flodnums, seed=split_idx)  # todo 按组划分 没有随机性
+        # A_list = [i[1].split(';')[0] for i in train_data]
+        # kf = RandomGroupKFold_split(A_list, flodnums, seed=split_idx)  # todo 按组划分
         # save
         save_kf = []
         for i, (train_fold, test_fold) in enumerate(kf):
@@ -617,21 +618,31 @@ for split_idx in range(split_nums):
         train_ = [train_data[i] for i in train_fold]
         dev_ = [train_data[i] for i in test_fold]
         # 将dev中出现过的实体从train中删除
-        train_ = delete_tag_in_dev(train_, dev_)
+        # train_ = delete_tag_in_dev(train_, dev_)
 
-        model = modify_bert_model_3_crf()
+        model = modify_bert_model_bilstm_crf()
 
         train_D = data_generator(train_)
         dev_D = data_generator(dev_)
 
         model_path = os.path.join(model_save_path,
-                                  str(split_idx) + '_' + "modify_bert_3_crf_model" + str(i) + ".weights")
+                                  str(split_idx) + '_' + "modify_bert_bilstm_crf_model" + str(i) + ".weights")
         if not os.path.exists(model_path):
+            tbCallBack = TensorBoard(log_dir=os.path.join(model_save_path, str(split_idx) + '_' + 'logs_' + str(i)),
+                                     # log 目录
+                                     histogram_freq=0,  # 按照何等频率（epoch）来计算直方图，0为不计算
+                                     batch_size=bsize,  # 用多大量的数据计算直方图
+                                     write_graph=True,  # 是否存储网络结构图
+                                     write_grads=False,  # 是否可视化梯度直方图
+                                     write_images=True,  # 是否可视化参数
+                                     embeddings_freq=0,
+                                     embeddings_layer_names=None,
+                                     embeddings_metadata=None)
             evaluator = Evaluate(dev_, model_path)
             model.fit_generator(train_D.__iter__(),
                                 steps_per_epoch=len(train_D),
                                 epochs=max_epochs,
-                                callbacks=[evaluator],
+                                callbacks=[evaluator, tbCallBack],
                                 validation_data=dev_D.__iter__(),
                                 validation_steps=len(dev_D)
                                 )
@@ -656,7 +667,7 @@ for split_idx in range(split_nums):
 # 通过验证集上的预测统计各样本的错误次数
 
 mistake_count = dict()
-for split_idx in split_nums:
+for split_idx in range(split_nums):
     cv_path = os.path.join(model_cv_path, 'cv_%d.pkl' % split_idx)
     assert os.path.exists(cv_path)
     f = open(cv_path, 'rb')
@@ -690,68 +701,78 @@ for i in train_data:
 
 
 flodnums = flod_nums
-for split_idx in range(split_nums):
-    # 拆分验证集
-    cv_path = os.path.join(model_cv_path, 'cv_final.pkl')
-    if not os.path.exists(cv_path):
-        kf = KFold(n_splits=flodnums, shuffle=True, random_state=520).split(train_data)
-        # save
-        save_kf = []
-        for i, (train_fold, test_fold) in enumerate(kf):
-            save_kf.append((train_fold, test_fold))
-        f = open(cv_path, 'wb')
-        pickle.dump(save_kf, f, 4)
-        f.close()
-        kf = save_kf
-    else:
-        f = open(cv_path, 'rb')
-        kf = pickle.load(f)
-        f.close()
 
-    score = []
-
+# 拆分验证集
+cv_path = os.path.join(model_cv_path, 'cv_final.pkl')
+if not os.path.exists(cv_path):
+    kf = KFold(n_splits=flodnums, shuffle=True, random_state=520).split(train_data)
+    # save
+    save_kf = []
     for i, (train_fold, test_fold) in enumerate(kf):
-        # break
-        print(('%d/%d' % (split_idx, split_nums)), "kFlod ", i, "/", flodnums)
-        train_ = [train_data_w[i] for i in train_fold]
-        dev_ = [train_data_w[i] for i in test_fold]
-        # 将dev中出现过的实体从train中删除
-        train_ = delete_tag_in_dev(train_, dev_)
+        save_kf.append((train_fold, test_fold))
+    f = open(cv_path, 'wb')
+    pickle.dump(save_kf, f, 4)
+    f.close()
+    kf = save_kf
+else:
+    f = open(cv_path, 'rb')
+    kf = pickle.load(f)
+    f.close()
 
-        model = modify_bert_model_3_crf()
+score = []
 
-        train_D = data_generator(train_, weight=True)
-        dev_D = data_generator(dev_, weight=True)
+for i, (train_fold, test_fold) in enumerate(kf):
+    # break
+    print('final', "kFlod ", i, "/", flodnums)
+    train_ = [train_data_w[i] for i in train_fold]
+    dev_ = [train_data_w[i] for i in test_fold]
+    # 将dev中出现过的实体从train中删除
+    # train_ = delete_tag_in_dev(train_, dev_)
 
-        model_path = os.path.join(model_save_path,
-                                  str(split_idx) + '_' + "modify_bert_3_crf_model" + str(i) + ".weights")
-        if not os.path.exists(model_path):
-            evaluator = Evaluate(dev_, model_path)
-            model.fit_generator(train_D.__iter__(),
-                                steps_per_epoch=len(train_D),
-                                epochs=max_epochs,
-                                callbacks=[evaluator],
-                                validation_data=dev_D.__iter__(),
-                                validation_steps=len(dev_D)
-                                )
+    model = modify_bert_model_bilstm_crf()
 
-        print("load best model weights ...")
-        model.load_weights(model_path)
-        val_result_path = os.path.join(model_save_path, str(split_idx) + '_' + "val_result_k" + str(i) + ".pkl")
-        print('val')
-        score.append(evaluate_cw(dev_, val_result_path))
-        print("valid evluation:", score[-1])
-        print("valid score:", score)
-        print("valid mean score:", np.mean(score, axis=0))
-        # print('test')
-        # result_path = os.path.join(model_save_path, str(split_idx)+'_'+"result_k" + str(i) + ".txt")
-        # test(test_data, result_path)
+    train_D = data_generator(train_, weight=True)
+    dev_D = data_generator(dev_, weight=True)
 
-        gc.collect()
-        del model
-        gc.collect()
-        K.clear_session()
-        break
+    model_path = os.path.join(model_save_path,
+                              str(split_idx) + '_' + "modify_bert_bilstm_crf_model" + str(i) + ".weights")
+    if not os.path.exists(model_path):
+        tbCallBack = TensorBoard(log_dir=os.path.join(model_save_path, 'finall_' + 'logs_' + str(i)),
+                                 # log 目录
+                                 histogram_freq=0,  # 按照何等频率（epoch）来计算直方图，0为不计算
+                                 batch_size=bsize,  # 用多大量的数据计算直方图
+                                 write_graph=True,  # 是否存储网络结构图
+                                 write_grads=False,  # 是否可视化梯度直方图
+                                 write_images=True,  # 是否可视化参数
+                                 embeddings_freq=0,
+                                 embeddings_layer_names=None,
+                                 embeddings_metadata=None)
+        evaluator = Evaluate(dev_, model_path)
+        model.fit_generator(train_D.__iter__(),
+                            steps_per_epoch=len(train_D),
+                            epochs=max_epochs,
+                            callbacks=[evaluator, tbCallBack],
+                            validation_data=dev_D.__iter__(),
+                            validation_steps=len(dev_D)
+                            )
+
+    print("load best model weights ...")
+    model.load_weights(model_path)
+    val_result_path = os.path.join(model_save_path, str(split_idx) + '_' + "val_result_k" + str(i) + ".pkl")
+    print('val')
+    score.append(evaluate_cw(dev_, val_result_path))
+    print("valid evluation:", score[-1])
+    print("valid score:", score)
+    print("valid mean score:", np.mean(score, axis=0))
+    # print('test')
+    # result_path = os.path.join(model_save_path, str(split_idx)+'_'+"result_k" + str(i) + ".txt")
+    # test(test_data, result_path)
+
+    gc.collect()
+    del model
+    gc.collect()
+    K.clear_session()
+    break
 
 '''
 预计耗时
