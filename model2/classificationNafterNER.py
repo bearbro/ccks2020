@@ -33,18 +33,20 @@ def list_find(list1, list2):
 # gpu_options = tf.GPUOptions(allow_growth=True)
 # sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
 
-data_path = '../model2/data/event_entity_train_data_label.csv'
-data_test_path = '../model2/data/event_entity_dev_data.csv'
+data_path = './data/event_entity_train_data_label.csv'
+data_test_path = './data/event_entity_dev_data.csv'
 sep = '\t'
+
+data_test_path_ner = './data/ccks2020_ckt_256_bilstm_crf/result_k0.txt'
 
 
 class Config:
-    bert_path = '../bert/chinese_L-12_H-768_A-12'
+    bert_path = os.path.join('../../bert', ['chinese_L-12_H-768_A-12', 'tf-bert_wwm_ext'][1])
     bert_config_path = os.path.join(bert_path, 'bert_config.json')
     bert_ckpt_path = os.path.join(bert_path, 'bert_model.ckpt')
     bert_dict_path = os.path.join(bert_path, 'vocab.txt')
-    ckpt_path = '../model2/data/classificationN_ckpt_after_ner_256'
-    save_path = '../model2/data/classificationN_save_after_ner_256'
+    ckpt_path = './data/classificationN_basic_out4_add_network_ckpt_after_ner_256'
+    save_path = './data/classificationN_basic_out4_add_network_save_after_ner_256_bilstm_crf'
     max_length = 256
     batch_size = 16
     learning_rate = 3e-5
@@ -145,7 +147,7 @@ data【text，A，Q/label】
 # 测试集 todo
 test_data = pd.read_csv(data_test_path, encoding='utf-8', sep=sep, index_col=None, header=None,
                         names=['id', 'text'], quoting=csv.QUOTE_NONE)
-data_test_path_ner = '../model2/data/ccks2020_ckt_256/result_kcv.txt'
+
 test_A = pd.read_csv(data_test_path_ner, encoding='utf-8', sep=',', index_col=None, header=None,
                      names=['id', 'A'], quoting=csv.QUOTE_NONE)
 test_data = pd.merge(test_data, test_A, how='inner', on=['id'])
@@ -243,6 +245,95 @@ def basic_network():
     # dense=bert_model.get_layer('NSP-Dense')
     bert_out1 = keras.layers.Lambda(lambda bert_out: bert_out[:, 0], name='bert_1')(bert_out)
     bert_out_next = bert_out1
+    outputs = keras.layers.Dense(len(id2label), activation='sigmoid', name='dense')(bert_out_next)
+
+    model = keras.models.Model([x_1, x_2], outputs, name='basic_model')
+    model.compile(
+        optimizer=keras.optimizers.Adam(config.learning_rate),
+        loss='binary_crossentropy',
+        metrics=['accuracy', f1_metric]
+    )
+    model.summary()
+    return model
+
+
+def basic_out4_network():
+    bert_model = load_trained_model_from_checkpoint(config.bert_config_path,
+                                                    config.bert_ckpt_path,
+                                                    training=False,
+                                                    output_layer_num=4,
+                                                    trainable=True)
+
+    x_1 = keras.layers.Input(shape=(None,), name='input_x1')
+    x_2 = keras.layers.Input(shape=(None,), name='input_x2')
+
+    bert_out = bert_model([x_1, x_2])  # 输出维度为(batch_size,max_length,768)
+
+    # dense=bert_model.get_layer('NSP-Dense')
+    bert_out1 = keras.layers.Lambda(lambda bert_out: bert_out[:, 0], name='bert_1')(bert_out)
+    bert_out_next = bert_out1
+    outputs = keras.layers.Dense(len(id2label), activation='sigmoid', name='dense')(bert_out_next)
+
+    model = keras.models.Model([x_1, x_2], outputs, name='basic_model')
+    model.compile(
+        optimizer=keras.optimizers.Adam(config.learning_rate),
+        loss='binary_crossentropy',
+        metrics=['accuracy', f1_metric]
+    )
+    model.summary()
+    return model
+
+
+class MyLayer(Layer):
+    """输入bert最后一层的embedding和位置信息token_ids
+
+    在这一层将embedding的第一位即cls和句子B的embedding的平均值拼接
+
+    # Arguments
+        result: 输出的矩阵纬度（batchsize,output_dim).
+    """
+
+    def __init__(self, **kwargs):
+        super(MyLayer, self).__init__(**kwargs)
+
+    def build(self, input_shape):  # 2*(batch_size,max_length,768)
+        assert isinstance(input_shape, list)
+        # Create a trainable weight variable for this layer.
+        # no need
+        super(MyLayer, self).build(input_shape)  # Be sure to call this at the end
+
+    def call(self, x):
+        assert isinstance(x, list)
+        bert_out, x1 = x
+        pooled_output = bert_out[:, 0]  # （batch_size，hidden_​​size）
+        target = tf.multiply(bert_out, K.expand_dims(x1, -1))  # 提取句子B（公司实体）的sequence_output  expand_dims和unsqueeze
+        # sequence方向上求和,形状为（batch_size，sequenceB_length，hidden_​​size）-》（batch_size，hidden_​​size）tf.div
+        target = K.sum(target, axis=1)
+        target_div = K.sum(x1, axis=1)  # 得到句子B的长度
+        target = tf.div(target, K.expand_dims(target_div, -1))  # 获得平均数，现状（batch_size，hidden_​​size） tf.div divide
+        target_cls = K.concatenate([target, pooled_output], axis=-1)  # 拼接
+
+        return target_cls
+
+    def compute_output_shape(self, input_shape):
+        assert isinstance(input_shape, list)
+        shape_a, shape_b = input_shape
+        return (shape_a[0], shape_a[-1] * 2)  # (batch_size,768*2)
+
+
+def basic_out4_add_network():  # cls+entity
+    bert_model = load_trained_model_from_checkpoint(config.bert_config_path,
+                                                    config.bert_ckpt_path,
+                                                    training=False,
+                                                    output_layer_num=4,
+                                                    trainable=True)
+
+    x_1 = keras.layers.Input(shape=(None,), name='input_x1')
+    x_2 = keras.layers.Input(shape=(None,), name='input_x2')
+
+    bert_out = bert_model([x_1, x_2])  # 输出维度为(batch_size,max_length,768)
+    bert_out = keras.layers.Lambda(lambda bert_out: bert_out)(bert_out)
+    bert_out_next = MyLayer()([bert_out, x_1])  # cls+entity
     outputs = keras.layers.Dense(len(id2label), activation='sigmoid', name='dense')(bert_out_next)
 
     model = keras.models.Model([x_1, x_2], outputs, name='basic_model')
@@ -359,7 +450,7 @@ def test_cv(text_in, add=False):
     return r
 
 
-def test_cv_decode_avg(text_in, result, result_path):
+def test_cv_decode0(text_in, result, result_path):
     '''获得cv的结果 平均'''
     result_avg = np.mean(result, axis=0)
     with open(result_path, 'w') as fout:
@@ -383,12 +474,13 @@ def test_cv_decode_avg(text_in, result, result_path):
                 fout.write('%d\t%s\t%s\n' % (id, 'NaN', 'NaN'))
 
 
-def test_cv_decode_count(text_in, result, result_path):
+def test_cv_decode(text_in, result, result_path, cv_type):
     '''获得cv的结果 投票'''
     result = np.array(result)
-    for i in result:
-        i[i > 0.5] = 1
-        i[i <= 0.5] = 0
+    if cv_type == 'count':
+        for i in result:
+            i[i > 0.5] = 1
+            i[i <= 0.5] = 0
     result_avg = np.mean(result, axis=0)
     with open(result_path, 'w') as fout:
         ri = 0
@@ -476,8 +568,8 @@ for i, (train_fold, test_fold) in enumerate(kf):
     train_D = data_generator(train_)
     dev_D = data_generator(dev_)
 
-    train_model = basic_network()
-    model_path = os.path.join(config.ckpt_path, "modify_bert_model_" + str(i) + ".weights")
+    train_model = basic_out4_add_network()
+    model_path = os.path.join(config.ckpt_path, "modify_basic_out4_add_network_" + str(i) + ".weights")
     if not os.path.exists(model_path):
         checkpoint = keras.callbacks.ModelCheckpoint(model_path,
                                                      monitor='val_f1_metric',
@@ -509,21 +601,22 @@ for i, (train_fold, test_fold) in enumerate(kf):
     # print("val evluation_add", score_add[-1])
     # print("val score_add:", score_add)
     # print("val mean score_add:", np.mean(score_add, axis=0))
-    result_path = os.path.join(config.save_path, "result_cv_k" + str(i) + ".csv")
-    if i == 0 or not os.path.exists(result_path):
+    result_path = os.path.join(config.save_path, "result_k0_k" + str(i) + ".csv")
+    if True or not os.path.exists(result_path):
         print('test')
         test(test_data, result_path, add=False)
 
     del train_model
     gc.collect()
     K.clear_session()
+    # 0/0
 
 #  集成答案
 result = []
 for i, (train_fold, test_fold) in enumerate(kf):
     print("kFlod ", i, "/", flodnums)
-    train_model = basic_network()
-    model_path = os.path.join(config.ckpt_path, "modify_bert_model_" + str(i) + ".weights")
+    train_model = basic_out4_add_network()
+    model_path = os.path.join(config.ckpt_path, "modify_basic_out4_add_network_" + str(i) + ".weights")
     print("load best model weights ...")
     train_model.load_weights(model_path)
     resulti = test_cv(test_data)
@@ -533,5 +626,8 @@ for i, (train_fold, test_fold) in enumerate(kf):
     gc.collect()
     K.clear_session()
 
-result_path = os.path.join(config.save_path, "result_cv_" + 'cv_count' + ".csv")
-test_cv_decode_count(test_data, result, result_path)  # todo 优化 avg 0.7571 count 0.7597
+result_path = os.path.join(config.save_path, "result_k0_" + 'cv_count' + ".csv")
+test_cv_decode(test_data, result, result_path, 'count')  # todo 优化
+
+result_path = os.path.join(config.save_path, "result_k0_" + 'cv_avg' + ".csv")
+test_cv_decode(test_data, result, result_path, 'avg')  # todo 优化
