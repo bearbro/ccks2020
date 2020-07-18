@@ -31,20 +31,24 @@ from random import choice
 from keras.callbacks import TensorBoard
 import tensorflow as tf
 
-# gpu_options = tf.GPUOptions(allow_growth=True)
-# sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
+from model2.GRU_model import MyGRU
+
+gpu_options = tf.GPUOptions(allow_growth=True)
+sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
+flodnums = 5
+tagkind = ['BIO', 'BIOES'][1]
 
 maxlen = 256  # 140
-learning_rate = 5e-5  # 5e-5
+learning_rate = 5e-4  # 5e-5
 min_learning_rate = 1e-5  # 1e-5
-bsize = 16
-bert_kind = ['chinese_L-12_H-768_A-12', 'tf-bert_wwm_ext'][0]
+bsize = 128
+bert_kind = ['chinese_L-12_H-768_A-12', 'tf-bert_wwm_ext'][1]
 config_path = os.path.join('../bert', bert_kind, 'bert_config.json')
 checkpoint_path = os.path.join('../bert', bert_kind, 'bert_model.ckpt')
 dict_path = os.path.join('../bert', bert_kind, 'vocab.txt')
 
-model_cv_path = "./data/"
-model_save_path = "./data/ccks2020_ckt_256_bilstm_crf/"
+model_cv_path = "./data/ccks2020_ckt_256_crossweight_bilstm_crf"
+model_save_path = "./data/ccks2020_ckt_256_biMyGRU_crf_BIOES_300/"
 train_data_path = '../model2/data/event_entity_train_data_label.csv'
 test_data_path = '../model2/data/event_entity_dev_data.csv'
 sep = '\t'
@@ -157,8 +161,10 @@ for id, t in zip(D["id"], D["text"]):
     test_data.append((id, t))
 print('最终测试集大小:%d' % len(test_data))
 print('-' * 30)
-
-BIOtag = ['O', 'B', 'I']  # todo 可以改用BIOES
+if tagkind == 'BIO':
+    BIOtag = ['O', 'B', 'I']
+elif tagkind == 'BIOES':
+    BIOtag = ['O', 'B', 'I', 'E', 'S']
 tag2id = {v: i for i, v in enumerate(BIOtag)}
 
 
@@ -174,9 +180,18 @@ def getBIO(text, e):
         # print(x2)
         for i in range(len(x1) - len(x2)):
             if x2 == x1[i:i + len(x2)] and sum(p1[i:i + len(x2)]) == 0:
-                pei = [tag2id['I']] * len(x2)
-                pei[0] = tag2id['B']
+                if tagkind == 'BIO':
+                    pei = [tag2id['I']] * len(x2)
+                    pei[0] = tag2id['B']
+                elif tagkind == 'BIOES':
+                    pei = [tag2id['I']] * len(x2)
+                    if len(x2) == 1:
+                        pei[0] = tag2id['S']
+                    else:
+                        pei[0] = tag2id['B']
+                        pei[-1] = tag2id['E']
                 p1[i:i + len(x2)] = pei
+
 
     maxN = len(BIOtag)
     id2matrix = lambda i: [1 if x == i else 0 for x in range(maxN)]
@@ -338,6 +353,63 @@ def modify_bert_model_bilstm_crf():
     return model
 
 
+def modify_bert_model_biMyGRU_crf():
+    bert_model = load_trained_model_from_checkpoint(
+        config_path, checkpoint_path,
+        output_layer_num=4
+    )
+
+    for l in bert_model.layers:
+        l.trainable = True
+
+    x1_in = Input(shape=(None,))  # 待识别句子输入
+    x2_in = Input(shape=(None,))  # 待识别句子输入
+
+    x1, x2 = x1_in, x2_in
+
+    outputs = bert_model([x1, x2])  # [batch,maxL,768]
+
+    outputs = Bidirectional(MyGRU(units=300, return_sequences=True, reset_after=True, name='MyGRU', tcell_num=3))(
+        outputs)
+    outputs = Dropout(0.2)(outputs)
+    crf = CRF(len(BIOtag), sparse_target=False)
+    outputs = crf(outputs)
+
+    model = keras.models.Model([x1_in, x2_in], outputs, name='basic_biMyGRU_crf_model')
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate), loss=crf.loss_function, metrics=[crf.accuracy])
+    model.summary()
+
+    return model
+
+
+def modify_bert_model_biGRU_crf():
+    bert_model = load_trained_model_from_checkpoint(
+        config_path, checkpoint_path,
+        output_layer_num=4
+    )
+
+    for l in bert_model.layers:
+        l.trainable = False
+
+    x1_in = Input(shape=(None,))  # 待识别句子输入
+    x2_in = Input(shape=(None,))  # 待识别句子输入
+
+    x1, x2 = x1_in, x2_in
+
+    outputs = bert_model([x1, x2])  # [batch,maxL,768]
+
+    outputs = Bidirectional(GRU(units=300, return_sequences=True, reset_after=True))(outputs)
+    outputs = Dropout(0.2)(outputs)
+    crf = CRF(len(BIOtag), sparse_target=False)
+    outputs = crf(outputs)
+
+    model = keras.models.Model([x1_in, x2_in], outputs, name='basic_bilstm_crf_model')
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate), loss=crf.loss_function, metrics=[crf.accuracy])
+    model.summary()
+
+    return model
+
+
 def modify_bert_model_3_crf():
     bert_model = load_trained_model_from_checkpoint(config_path, checkpoint_path)
 
@@ -416,35 +488,71 @@ def decode(text_in, p_in):
     _tokens = ' %s ' % text_in
     ei = ''
     r = []
-    for i, v in enumerate(p):
-        if ei == '':
-            if v == tag2id['B']:
-                ei += _tokens[i]
-        else:
-            if v == tag2id['B']:
-                r.append(ei)
-                ei = _tokens[i]
-            elif v == tag2id['I']:
-                ei += _tokens[i]
-            elif v == tag2id['O']:
-                r.append(ei)
-                ei = ''
+    if tagkind == 'BIO':
+        for i, v in enumerate(p):
+            if ei == '':
+                if v == tag2id['B']:
+                    ei += _tokens[i]
+            else:
+                if v == tag2id['B']:
+                    r.append(ei)
+                    ei = _tokens[i]
+                elif v == tag2id['I']:
+                    ei += _tokens[i]
+                elif v == tag2id['O']:
+                    r.append(ei)
+                    ei = ''
+    elif tagkind == 'BIOES':
+        for i, v in enumerate(p):
+            if ei == '':
+                if v == tag2id['B']:
+                    ei = _tokens[i]
+                elif v == tag2id['S']:
+                    r.append(_tokens[i])
+            else:
+                if v == tag2id['B']:
+                    ei = _tokens[i]
+                elif v == tag2id['I']:
+                    ei += _tokens[i]
+                elif v == tag2id['E']:
+                    ei += _tokens[i]
+                    r.append(ei)
+                    ei = ''
+                elif v == tag2id['O']:
+                    # r.append(ei)
+                    ei = ''
+                elif v == tag2id['S']:
+                    r.append(_tokens[i])
+                    ei = ''
+
     r = [i for i in r if len(i) > 1]
     r = list(set(r))
     r.sort()
     return ';'.join(r)
 
 
-def extract_entity(text_in):
+def extract_entity(text_in, batch=None):
     """解码函数，应自行添加更多规则，保证解码出来的是一个公司名
     """
-    text_in = text_in[:maxlen]
-    _tokens = tokenizer.tokenize(text_in)
-    _x1, _x2 = tokenizer.encode(text_in)
-    _x1, _x2 = np.array([_x1]), np.array([_x2])
-    _p = model.predict([_x1, _x2])[0]
-    a = decode(text_in, _p)
-    return a
+    if batch == None:
+        text_in = text_in[:maxlen]
+        _tokens = tokenizer.tokenize(text_in)
+        _x1, _x2 = tokenizer.encode(text_in)
+        _x1, _x2 = np.array([_x1]), np.array([_x2])
+        _p = model.predict([_x1, _x2])[0]
+        a = decode(text_in, _p)
+        return a
+    else:
+        text_in = [i[:maxlen] for i in text_in]
+        ml = max([len(i) for i in text_in])
+        x1x2 = [tokenizer.encode(i, max_len=ml) for i in text_in]
+        _x1 = np.array([i[0] for i in x1x2])
+        _x2 = np.array([i[1] for i in x1x2])
+        _p = model.predict([_x1, _x2])
+        a = []
+        for i in range(len(text_in)):
+            a.append(decode(text_in[i], _p[i]))
+        return a
 
 
 def myF1_P_R(y_true, y_pre):
@@ -460,19 +568,20 @@ def myF1_P_R(y_true, y_pre):
     return F1, P, R
 
 
-def evaluate(dev_data):
+def evaluate(dev_data, batch=1):
     A = 1e-10
     F = 1e-10
-    for d in tqdm(iter(dev_data)):
-        text = d[0][:maxlen]
-        e = d[1]
-        y = extract_entity(d[0])
-        Y = e
-        if type(e) != str:
-            Y = decode(text, e)
-        f, p, r = myF1_P_R(Y, y)
-        A += p
-        F += f
+    for idx in tqdm(range(0, len(dev_data), batch)):
+        d = [i[0][:maxlen] for i in dev_data[idx:idx + batch]]
+        Y = [i[1] for i in dev_data[idx:idx + batch]]  # 真实的公司名称，形如： 公司A;公司B;公司C
+        y = extract_entity(d, batch)  # 预测的公司名称，形如： 公司A;公司B
+
+        for j in range(len(d)):
+            if type(Y[j]) != str:
+                Y[j] = decode(d[j], Y[j])
+            f, p, r = myF1_P_R(Y[j], y[j])  # 求指标
+            A += p
+            F += f
     return A / len(dev_data), F / len(dev_data)
 
 
@@ -499,7 +608,7 @@ class Evaluate(Callback):
             self.passed += 1
 
     def on_epoch_end(self, epoch, logs=None):
-        acc = evaluate(self.dev_data)[0]
+        acc = evaluate(self.dev_data, bsize * 2)[0]
         self.ACC.append(acc)
         if acc > self.best:
             self.best = acc
@@ -540,10 +649,10 @@ def test_cv_decode(test_data, result, result_path):
 
 
 # Model
-flodnums = 10
+
 
 # 拆分验证集
-cv_path = os.path.join(model_cv_path, 'cv.pkl')
+cv_path = os.path.join(model_cv_path, 'cv_0.pkl')
 if not os.path.exists(cv_path):
     kf = KFold(n_splits=flodnums, shuffle=True, random_state=520).split(train_data)
     # save
@@ -563,19 +672,17 @@ else:
 score = []
 
 for i, (train_fold, test_fold) in enumerate(kf):
-    if i != 9:
-        continue
     # break
     print("kFlod ", i, "/", flodnums)
     train_ = [train_data[i] for i in train_fold]
     dev_ = [train_data[i] for i in test_fold]
 
-    model = modify_bert_model_bilstm_crf()
-
+    model = modify_bert_model_biMyGRU_crf()
+    0 / 0
     train_D = data_generator(train_)
     dev_D = data_generator(dev_)
 
-    model_path = os.path.join(model_save_path, "modify_bert_bilstm_crf_model" + str(i) + ".weights")
+    model_path = os.path.join(model_save_path, "modify_bert_biMyGRU_crf_model" + str(i) + ".weights")
     if not os.path.exists(model_path):
         tbCallBack = TensorBoard(log_dir=os.path.join(model_save_path, 'logs_' + str(i)),  # log 目录
                                  histogram_freq=0,  # 按照何等频率（epoch）来计算直方图，0为不计算
@@ -590,20 +697,20 @@ for i, (train_fold, test_fold) in enumerate(kf):
         evaluator = Evaluate(dev_, model_path)
         H = model.fit_generator(train_D.__iter__(),
                                 steps_per_epoch=len(train_D),
-                                epochs=15,
+                                epochs=5,
                                 callbacks=[evaluator, tbCallBack],
                                 validation_data=dev_D.__iter__(),
                                 validation_steps=len(dev_D)
                                 )
-        f = open(model_path.replace('.weights', 'history.pkl'), 'wb')
-        pickle.dump(H, f, 4)
-        f.close()
+        # f = open(model_path.replace('.weights', 'history.pkl'), 'wb')
+        # pickle.dump(H, f, 4)
+        # f.close()
 
     print("load best model weights ...")
     model.load_weights(model_path)
 
     print('val')
-    score.append(evaluate(dev_))
+    score.append(evaluate(dev_, batch=bsize * 2))
     print("valid evluation:", score[-1])
     print("valid score:", score)
     print("valid mean score:", np.mean(score, axis=0))
@@ -625,8 +732,8 @@ for i, (train_fold, test_fold) in enumerate(kf):
 result = []
 for i, (train_fold, test_fold) in enumerate(kf):
     print("kFlod ", i, "/", flodnums)
-    model = modify_bert_model_bilstm_crf()
-    model_path = os.path.join(model_save_path, "modify_bert_bilstm_crf_model" + str(i) + ".weights")
+    model = modify_bert_model_biMyGRU_crf()
+    model_path = os.path.join(model_save_path, "modify_bert_biMyGRU_crf_model" + str(i) + ".weights")
     print("load best model weights ...")
     model.load_weights(model_path)
     resulti = test_cv(test_data)
