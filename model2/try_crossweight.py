@@ -48,6 +48,9 @@ from random import choice
 import tensorflow as tf
 from keras.callbacks import TensorBoard
 
+gpu_options = tf.GPUOptions(allow_growth=True)
+sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
+
 split_nums = 3
 flod_nums = 5
 mistake_eps = 0.7
@@ -150,7 +153,7 @@ classes = set(data["Q"].unique())
 entity_train = list(set(data['A'].values.tolist()))
 
 # ClearData
-data.drop("id", axis=1, inplace=True)  # drop id
+# data.drop("id", axis=1, inplace=True)  # drop id
 data.drop_duplicates(['text', 'Q', 'A'], keep='first', inplace=True)  # drop duplicates
 data.drop("Q", axis=1, inplace=True)  # drop Q
 
@@ -159,8 +162,10 @@ data["A"] = data["A"].map(lambda x: str(x).replace('NaN', ''))
 data["e"] = data.apply(lambda row: 1 if row['A'] in row['text'] else 0, axis=1)
 
 data = data[data["e"] == 1]
-data = data.groupby(['text'], sort=False)['A'].apply(lambda x: ';'.join(x)).reset_index()
-
+data_t_a = data.groupby(['text'], sort=False)['A'].apply(lambda x: ';'.join(x)).reset_index()
+data_t_id = data.groupby(['text'], sort=False)['id'].apply(lambda x: ';'.join(map(str, x))).reset_index()
+data_t_id = pd.merge(data_t_id, data_t_a, on=['text'], how='outer')
+data = data_t_a
 train_data = []
 for t, n in zip(data["text"], data["A"]):
     train_data.append((t, n))
@@ -699,7 +704,20 @@ for i in train_data:
 # 使用新权重训练模型（终止条件，保留的模型 ）
 # 在测试集上预测
 
+# 保存错误个数
+train_data_wc = []
+data_t_id
+for i in range(len(data_t_id)):
+    t = data_t_id.text[i]
+    a = data_t_id.A[i]
+    id = data_t_id.id[i]
+    w = mistake_count.get(t, 0)
+    train_data_wc.append((id, t, a, w))
+wc = pd.DataFrame(train_data_wc, columns=['id', 'text', 'A', 'w_count'])
+wc.to_csv(os.path.join(model_cv_path, 'w_count.csv'), index=None, sep='\t')
+wc[wc.w_count == 3].to_csv(os.path.join(model_cv_path, 'w_count_3.csv'), index=None, sep='\t')
 
+0 / 0
 flodnums = flod_nums
 
 # 拆分验证集
@@ -734,8 +752,8 @@ for i, (train_fold, test_fold) in enumerate(kf):
     train_D = data_generator(train_, weight=True)
     dev_D = data_generator(dev_, weight=True)
 
-    model_path = os.path.join(model_save_path,
-                              str(split_idx) + '_' + "modify_bert_bilstm_crf_model" + str(i) + ".weights")
+    model_path = os.path.join(model_save_path, 'finall_' +
+                              '_' + "modify_bert_bilstm_crf_model" + str(i) + ".weights")
     if not os.path.exists(model_path):
         tbCallBack = TensorBoard(log_dir=os.path.join(model_save_path, 'finall_' + 'logs_' + str(i)),
                                  # log 目录
@@ -758,15 +776,14 @@ for i, (train_fold, test_fold) in enumerate(kf):
 
     print("load best model weights ...")
     model.load_weights(model_path)
-    val_result_path = os.path.join(model_save_path, str(split_idx) + '_' + "val_result_k" + str(i) + ".pkl")
     print('val')
-    score.append(evaluate_cw(dev_, val_result_path))
+    score.append(evaluate(dev_))
     print("valid evluation:", score[-1])
     print("valid score:", score)
     print("valid mean score:", np.mean(score, axis=0))
-    # print('test')
-    # result_path = os.path.join(model_save_path, str(split_idx)+'_'+"result_k" + str(i) + ".txt")
-    # test(test_data, result_path)
+    print('test')
+    result_path = os.path.join(model_save_path, 'finall_' + "result_k" + str(i) + ".txt")
+    test(test_data, result_path)
 
     gc.collect()
     del model
@@ -778,5 +795,5 @@ for i, (train_fold, test_fold) in enumerate(kf):
 预计耗时
 1个model 4~5h
 3*5+1个模型
-1天4个model，要4天
+1天3个model，要6天
 '''
