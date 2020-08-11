@@ -110,6 +110,7 @@ def delete_tag(s):
     # s = re.sub(" ", "", s)
     r4 = re.compile('\d{4}[-/年](\d{2}([-/月]\d{2}[日]{0,1}){0,1}){0,1}')  # 日期
     s = re.sub(r4, "▲", s)
+    s = s.replace("\x07", "").replace("\x05", "").replace("\x08", "").replace("\x06", "").replace("\x04", "")
     return s
 
 
@@ -153,8 +154,7 @@ D = pd.read_csv(test_data_path, header=None, sep=sep,
 D['text'] = [delete_tag(s) for s in D.text]
 D.fillna('NaN', inplace=True)
 # D['event'] = D['event'].map(lambda x: "公司股市异常" if x == "股市异常" else x)
-D['text'] = D['text'].map(
-    lambda x: x.replace("\x07", "").replace("\x05", "").replace("\x08", "").replace("\x06", "").replace("\x04", ""))
+
 
 test_data = []
 for id, t in zip(D["id"], D["text"]):
@@ -617,24 +617,31 @@ class Evaluate(Callback):
         print('acc: %.4f, best acc: %.4f\n' % (acc, self.best))
 
 
-def test(test_data, result_path):
+def test(test_data, result_path, batch=1):
     F = open(result_path, 'w', encoding='utf-8')
-    for d in tqdm(iter(test_data)):
-        s = u'%s,%s\n' % (d[0], extract_entity(d[1]))
-        F.write(s)
+    for idx in tqdm(range(0, len(test_data), batch)):
+        d0 = [i[0] for i in test_data[idx:idx + batch]]
+        d1 = [i[1] for i in test_data[idx:idx + batch]]
+        y = extract_entity(d1, batch)
+        for i in range(len(d0)):
+            s = u'%s,%s\n' % (d0[i], y[i])
+            F.write(s)
+        F.flush()
     F.close()
 
 
-def test_cv(test_data):
+def test_cv(test_data, batch=1):
     '''预测'''
     r = []
-    for d in tqdm(iter(test_data)):
-        text_in = d[1][:maxlen]
-        _tokens = tokenizer.tokenize(text_in)
-        _x1, _x2 = tokenizer.encode(text_in)
-        _x1, _x2 = np.array([_x1]), np.array([_x2])
-        _p = model.predict([_x1, _x2])[0]
-        r.append(_p)
+    for idx in tqdm(range(0, len(test_data), batch)):
+        d0 = [i[0] for i in test_data[idx:idx + batch]]
+        d1 = [i[1][:maxlen] for i in test_data[idx:idx + batch]]
+        ml = max([len(i) for i in d1])
+        x1x2 = [tokenizer.encode(i, max_len=ml) for i in d1]
+        _x1 = np.array([i[0] for i in x1x2])
+        _x2 = np.array([i[1] for i in x1x2])
+        _p = model.predict([_x1, _x2])
+        r += _p
     return r
 
 
@@ -646,9 +653,6 @@ def test_cv_decode(test_data, result, result_path):
         s = u'%s,%s\n' % (d[0], decode(d[1], result_avg[idx]))
         F.write(s)
     F.close()
-
-
-# Model
 
 
 # 拆分验证集
