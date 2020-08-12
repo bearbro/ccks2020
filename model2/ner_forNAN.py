@@ -696,7 +696,7 @@ else:
 score = []
 
 for i, (train_fold, test_fold) in enumerate(kf):
-    # break
+    break
     print("kFlod ", i, "/", flodnums)
     # train_ = [train_data[i] for i in train_fold]
     # dev_ = [train_data[i] for i in test_fold]
@@ -753,44 +753,45 @@ for i, (train_fold, test_fold) in enumerate(kf):
 # %tensorboard --logdir logs  #定位tensorboard读取的文件目录
 
 
-#  集成答案
-result = []
-for i, (train_fold, test_fold) in enumerate(kf):
-    print("kFlod ", i, "/", flodnums)
-    model = modify_bert_model_biMyGRU_crf()
-    model_path = os.path.join(
-        model_save_path, "modify_bert_biMyGRU_crf_model" + str(i) + ".weights")
-    print("load best model weights ...")
-    model.load_weights(model_path)
-    resulti = test_cv(test_data, batch=bsize)
-    result.append(resulti)
-    gc.collect()
-    del model
-    gc.collect()
-    K.clear_session()
-
-result_path = os.path.join(model_save_path, "train_ner_result_k" + 'cv' + ".txt")
-test_cv_decode(test_data, result, result_path)  # todo 优化
+# #  集成答案
+# result = []
+# for i, (train_fold, test_fold) in enumerate(kf):
+#     print("kFlod ", i, "/", flodnums)
+#     model = modify_bert_model_biMyGRU_crf()
+#     model_path = os.path.join(
+#         model_save_path, "modify_bert_biMyGRU_crf_model" + str(i) + ".weights")
+#     print("load best model weights ...")
+#     model.load_weights(model_path)
+#     resulti = test_cv(test_data, batch=bsize)
+#     result.append(resulti)
+#     gc.collect()
+#     del model
+#     gc.collect()
+#     K.clear_session()
+#
+# result_path = os.path.join(model_save_path, "train_ner_result_k" + 'cv' + ".txt")
+# test_cv_decode(test_data, result, result_path)  # todo 优化
 
 # 合并原始数据与预测的ner
 '''
 合并策略：
 1、仅保留原始数据的ner，保留了A=NAN的数据（目前的）  67002
 2、仅保留原始数据的ner，不保留A=NAN的数据（试过，效果比1差）  40284
-3、保留原始数据的ner，对A=NAN的数据进行添加ner 正在尝试
+3、保留原始数据的ner，对A=NAN的数据进行添加ner 正在尝试 72640
 4、使用预测的ner修正原始的ner并人工加上classification标签
-    4.1 仅修正A!=NAN的数据的标签，不保留A=NAN的数据（学弟） 67119
+    4.1 仅修正A!=NAN的数据的标签，不保留A=NAN的数据（学弟） 67119  准确率0.52 召回率0.81
 '''
 
 # 策略3
 data1path = train_data_path
 data2path = os.path.join(model_save_path, "train_ner_result_k" + 'cv' + ".txt")
-save_path = data2path.replace('.txt', 'strategy3.txt')
+save_path = data2path.replace('.txt', '_strategy3.txt')
 data1 = pd.read_csv(data1path, encoding='utf-8', sep=sep,
                     names=['id', 'text', 'Q', 'A'], quoting=csv.QUOTE_NONE)
-data2 = pd.read_csv(train_data_path, encoding='utf-8', sep=',',
+data1.fillna('NaN', inplace=True)
+data2 = pd.read_csv(data2path, encoding='utf-8', sep=',',
                     names=['id', 'A'], quoting=csv.QUOTE_NONE)
-data2.fillna('', inplace=True)
+data2.fillna('NaN', inplace=True)
 # todo 将A拆开
 data21 = data2['A'].str.split(';', expand=True).stack()
 data21 = data21.reset_index(level=1, drop=True).rename('A')
@@ -802,3 +803,4 @@ data_nan = pd.merge(data_nan, data2, how='left', on=['id'])
 data1 = data1[data1.A != 'NaN']
 data = pd.concat([data1, data_nan], axis=0, ignore_index=True)
 data.to_csv(save_path, sep=sep, columns=['id', 'text', 'Q', 'A'], header=False, index=False, encoding='utf-8')
+print(data[data.Q == 'NaN'])
